@@ -467,15 +467,33 @@ export class EasyFilesChild extends JSWindowActorChild {
         } catch {}
       }
 
-      console.log(
-        "[EasyFilesChild] files dropped:",
-        files.map((f) => `${f.name}(${f.bytes?.byteLength ?? f.bytes?.length}b)`).join(", "),
-        "setter=" + setterUsed,
-        "input.files.length=" + input.files?.length,
-        "input=",
-        input,
-        "alsoFiredOnLabel=" + !!(label && label.isConnected)
-      );
+      // Diagnostic log — wrapped in its own try because stringifying a content
+      // DOM node from chrome can throw "Permission denied to access object"
+      // even when the actual file drop succeeded. We don't want a logging
+      // failure to surface as a misleading top-level error.
+      try {
+        let len = "?";
+        try {
+          len = input.files?.length;
+        } catch {}
+        console.log(
+          "[EasyFilesChild] files dropped:",
+          files
+            .map(
+              (f) =>
+                `${f.name}(${f.bytes?.byteLength ?? f.bytes?.length}b)`
+            )
+            .join(", "),
+          "setter=" + setterUsed,
+          "input.files.length=" + len,
+          "alsoFiredOnLabel=" + !!(label && label.isConnected)
+        );
+      } catch (logErr) {
+        console.warn(
+          "[EasyFilesChild] post-drop diagnostic log failed (file drop itself succeeded)",
+          logErr
+        );
+      }
     } catch (e) {
       console.error("[EasyFilesChild] setting files failed", e);
     }
@@ -494,11 +512,18 @@ export class EasyFilesChild extends JSWindowActorChild {
     try {
       const contentFiles = [];
       for (const fd of files) {
-        const view =
-          fd.bytes instanceof Uint8Array ? fd.bytes : new Uint8Array(fd.bytes);
-        const arrayBuf = new win.ArrayBuffer(view.byteLength);
-        new win.Uint8Array(arrayBuf).set(view);
-        const blob = new win.Blob([arrayBuf], { type: fd.type || "" });
+        // Same cross-compartment hazard as _setFilesOnInput: chrome bytes can't
+        // be copied into a content-scope Uint8Array via .set(). Use Cu.cloneInto
+        // on the underlying ArrayBuffer to move it into the content scope.
+        const sourceBuffer =
+          fd.bytes instanceof Uint8Array
+            ? fd.bytes.buffer.slice(
+                fd.bytes.byteOffset,
+                fd.bytes.byteOffset + fd.bytes.byteLength
+              )
+            : fd.bytes;
+        const contentBuffer = Cu.cloneInto(sourceBuffer, win);
+        const blob = new win.Blob([contentBuffer], { type: fd.type || "" });
         const file = new win.File([blob], fd.name, {
           type: fd.type || "",
           lastModified: fd.lastModified || Date.now(),
@@ -534,7 +559,7 @@ export class EasyFilesChild extends JSWindowActorChild {
       for (const h of result) contentArray.push(h);
       resolve(contentArray);
     } catch (e) {
-      console.error("EasyFilesChild: building handles failed", e);
+      console.error("[EasyFilesChild] building handles failed", e);
       try {
         reject(
           new win.DOMException(
