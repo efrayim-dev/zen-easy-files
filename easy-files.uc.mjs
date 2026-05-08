@@ -324,33 +324,46 @@ class EasyFilesController {
       );
     });
 
-    // Bind once so we have a stable reference to remove later. Without this,
-    // every script reload (Sine update / dev refresh) stacks another window
-    // listener pointing at a dead controller, and a single click triggers
-    // _onRequest on every previous instance whose panel has long since been
-    // removed from the DOM.
-    this._onRequestBound = (e) => this._onRequest(e);
-    window.addEventListener("EasyFiles:RequestPicker", this._onRequestBound);
+    // Single window-level dispatcher pattern. Instead of each controller
+    // attaching its own listener (which leaks across script reloads since
+    // pre-destroy() versions can't be cleaned up), we keep ONE function
+    // reference on window._easyFilesPickerListener. Every script reload
+    // removes the old one (whatever it was) and installs a fresh one that
+    // delegates to whatever window._easyFilesController points at right now.
+    if (window._easyFilesPickerListener) {
+      try {
+        window.removeEventListener(
+          "EasyFiles:RequestPicker",
+          window._easyFilesPickerListener
+        );
+      } catch {}
+    }
+    const dispatch = (e) => {
+      const ctrl = window._easyFilesController;
+      if (ctrl) ctrl._onRequest(e);
+    };
+    window.addEventListener("EasyFiles:RequestPicker", dispatch);
+    window._easyFilesPickerListener = dispatch;
     console.log(
       "[EasyFiles] controller initialized, panel built, listening for EasyFiles:RequestPicker"
     );
   }
 
   destroy() {
-    if (this._onRequestBound) {
-      try {
-        window.removeEventListener(
-          "EasyFiles:RequestPicker",
-          this._onRequestBound
-        );
-      } catch {}
-      this._onRequestBound = null;
-    }
+    // The window-level dispatcher (window._easyFilesPickerListener) is
+    // managed by init() across reloads, so we don't touch it here. We just
+    // null out our panel reference so any in-flight async handlers no-op.
     this.panel = null;
     console.log("[EasyFiles] previous controller destroyed");
   }
 
   async _onRequest(event) {
+    if (!this.panel) {
+      console.log(
+        "[EasyFiles] _onRequest fired on destroyed controller, ignoring"
+      );
+      return;
+    }
     console.log("[EasyFiles] _onRequest fired, detail=", event.detail);
     const { detail } = event;
     this.activeBrowser = detail.browser;
