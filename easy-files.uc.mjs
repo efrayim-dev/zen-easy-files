@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name           Zen Easy Files
-// @namespace      https://github.com/efray/zen-easy-files
+// @namespace      https://github.com/efrayim-dev/zen-easy-files
 // @description    Opera-like file picker with recent downloads, clipboard, and screenshots
 // @include        main
 // @include        chrome://browser/content/browser.xhtml

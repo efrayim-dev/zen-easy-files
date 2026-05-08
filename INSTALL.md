@@ -84,7 +84,7 @@ the root, which is already the case.)
 
 ### 3. In the **Local Installation** section
 
-Type `<your-github-username>/zen-easy-files` (e.g., `efray/zen-easy-files`) and
+Type `efrayim-dev/zen-easy-files` (or the full URL `https://github.com/efrayim-dev/zen-easy-files`) and
 click **Install**.
 
 ### 4. Restart Zen when Sine prompts.
