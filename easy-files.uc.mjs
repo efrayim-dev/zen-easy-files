@@ -44,24 +44,91 @@ function setupDefaults() {
   safeSet(PREF_RECENT_SOURCE, () => branch.setStringPref(PREF_RECENT_SOURCE, "folder"));
 }
 
-function getDefaultDownloadsPath() {
-  for (const key of ["DfltDwnld", "Downld", "Desk"]) {
+// Try to find a usable system Downloads/Documents/Desktop directory. Returns
+// { path, key } for the first one that actually exists, or { path: "" }.
+function findSystemDefaultFolder() {
+  // DfltDwnld = user's preferred Firefox download dir; Downld = OS Downloads;
+  // Pers = Documents (Personal); Desk = Desktop; Home = profile-level home.
+  for (const key of ["DfltDwnld", "Downld", "Pers", "Desk", "Home"]) {
     try {
       const dir = Services.dirsvc.get(key, Ci.nsIFile);
-      if (dir?.path && dir.exists() && dir.isDirectory()) return dir.path;
+      if (dir?.path && dir.exists() && dir.isDirectory()) {
+        return { path: dir.path, key };
+      }
     } catch {}
   }
-  return "";
+  return { path: "", key: null };
+}
+
+function pathIsValidDirectory(p) {
+  if (!p) return false;
+  try {
+    const f = new FileUtils.File(p);
+    return f.exists() && f.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+// Resolve the folder we should scan for the Recent tab. Always tells the
+// caller WHICH path was chosen and why, so empty/error states in the panel
+// can show something actionable instead of just "Folder is empty".
+//
+// Returns:
+//   {
+//     path,            // absolute path string we will scan, or "" if none
+//     source,          // "pref" | "default" | "fallback" | "none"
+//     fallbackKey,     // dirsvc key used (only when source !== "pref")
+//     configured,      // raw value of the pref (empty string if unset)
+//     prefIsValid,     // true iff configured was a real directory
+//   }
+function resolveRecentFolder() {
+  let configured = "";
+  try {
+    configured =
+      (Services.prefs.getStringPref(PREF_RECENT_FOLDER, "") || "").trim();
+  } catch {}
+
+  const prefIsValid = configured ? pathIsValidDirectory(configured) : false;
+
+  if (configured && prefIsValid) {
+    return {
+      path: configured,
+      source: "pref",
+      fallbackKey: null,
+      configured,
+      prefIsValid: true,
+    };
+  }
+
+  const sys = findSystemDefaultFolder();
+  if (sys.path) {
+    return {
+      path: sys.path,
+      source: configured ? "fallback" : "default",
+      fallbackKey: sys.key,
+      configured,
+      prefIsValid: false,
+    };
+  }
+
+  return {
+    path: "",
+    source: "none",
+    fallbackKey: null,
+    configured,
+    prefIsValid: false,
+  };
+}
+
+// Backwards-compat helpers — kept for any existing callers; prefer
+// resolveRecentFolder() when you also need to know about fallbacks.
+function getDefaultDownloadsPath() {
+  return findSystemDefaultFolder().path;
 }
 
 function getRecentFolderPath() {
-  let p = "";
-  try {
-    p = Services.prefs.getStringPref(PREF_RECENT_FOLDER, "") || "";
-  } catch {}
-  p = (p || "").trim();
-  if (p) return p;
-  return getDefaultDownloadsPath();
+  return resolveRecentFolder().path;
 }
 
 // Sine's preferences UI stores numeric inputs as STRING prefs (since
@@ -143,6 +210,7 @@ function buildPanel() {
         <div class="ef-folder-bar">
           <span class="ef-folder-label" data-info="folder">…</span>
           <div class="ef-folder-actions">
+            <button class="ef-folder-btn" data-action="refresh-recent" title="Rescan folder">🔄</button>
             <button class="ef-folder-btn" data-action="toggle-source" title="Toggle between folder scan and download history">⇄</button>
             <button class="ef-folder-btn" data-action="pick-folder" title="Choose folder">📁</button>
           </div>
@@ -255,13 +323,31 @@ class EasyFilesController {
     if (source === "downloads") {
       label.textContent = "Source: download history";
       label.title = "Showing files from Zen's download history";
-    } else {
-      const path = getRecentFolderPath();
-      label.textContent = path
-        ? "📂 " + collapsePath(path)
-        : "(no folder configured)";
-      label.title = path || "Set a folder in Sine settings or click 📁";
+      return;
     }
+
+    const info = resolveRecentFolder();
+    if (!info.path) {
+      label.textContent = "(no folder configured)";
+      label.title =
+        "Open mod settings or click 📁 to set the Recent files folder.";
+      return;
+    }
+
+    let prefix = "📂 ";
+    let title = info.path;
+    if (info.source === "fallback") {
+      prefix = "⚠️ ";
+      title =
+        "Configured folder is invalid: " +
+        (info.configured || "(empty)") +
+        "\nFalling back to: " +
+        info.path;
+    } else if (info.source === "default") {
+      title = "Default OS folder: " + info.path;
+    }
+    label.textContent = prefix + collapsePath(info.path);
+    label.title = title;
   }
 
   async _loadRecent() {
@@ -277,15 +363,32 @@ class EasyFilesController {
         .map((s) => s.trim())
         .filter(Boolean);
 
+      const source = this._getRecentSource();
       const t0 = Date.now();
-      const items =
-        this._getRecentSource() === "downloads"
-          ? await this._collectFromDownloadHistory()
-          : this._collectFromFolder();
+      let scan;
+      if (source === "downloads") {
+        const items = await this._collectFromDownloadHistory();
+        scan = {
+          items,
+          path: "(Zen download history)",
+          totalEntries: items.length,
+          error: null,
+          source,
+        };
+      } else {
+        scan = this._collectFromFolder();
+      }
       console.log(
-        `[EasyFiles] collected ${items.length} items in ${Date.now() - t0}ms`
+        "[EasyFiles] recent scan:",
+        "source=" + scan.source,
+        "path=" + scan.path,
+        "rawEntries=" + scan.totalEntries,
+        "items=" + scan.items.length,
+        "took=" + (Date.now() - t0) + "ms",
+        scan.error ? "error=" + scan.error : ""
       );
 
+      const items = scan.items;
       items.sort((a, b) => b.mtime - a.mtime);
 
       const matching = acceptParts.length
@@ -302,12 +405,8 @@ class EasyFilesController {
       this.recentDownloads = display;
 
       if (!display.length) {
-        const source = this._getRecentSource();
-        const reason =
-          source === "downloads"
-            ? "No items in download history."
-            : "Folder is empty or unreadable.";
-        list.innerHTML = `<div class="ef-empty">${reason}</div>`;
+        list.innerHTML = "";
+        list.appendChild(this._buildEmptyMessage(scan));
         return;
       }
 
@@ -335,6 +434,61 @@ class EasyFilesController {
         String(e.message || e)
       )}</div>`;
     }
+  }
+
+  // Render an actionable empty state. Tells the user exactly which folder
+  // was scanned, how many entries were skipped (subdirectories etc.), and
+  // suggests next steps based on what went wrong.
+  _buildEmptyMessage(scan) {
+    const ns = "http://www.w3.org/1999/xhtml";
+    const wrap = document.createElementNS(ns, "div");
+    wrap.className = "ef-empty";
+
+    const lines = [];
+    if (scan.source === "downloads") {
+      lines.push("No items in Zen's download history.");
+      lines.push(
+        "Tip: switch the source to a folder using the ⇄ button above."
+      );
+    } else if (scan.source === "none" || !scan.path) {
+      lines.push("Could not find a folder to scan.");
+      lines.push("Click 📁 to choose one, or set it in Sine mod settings.");
+    } else if (scan.error) {
+      lines.push("Could not read the folder:");
+      lines.push(scan.path);
+      lines.push("Reason: " + scan.error);
+    } else if (scan.totalEntries === 0) {
+      lines.push("Folder is empty:");
+      lines.push(scan.path);
+    } else {
+      // We saw entries but ended up with zero usable files (e.g., the folder
+      // only contained subfolders, or all entries were skipped).
+      lines.push("Folder has no regular files:");
+      lines.push(scan.path);
+      lines.push(
+        `(${scan.totalEntries} entries seen, but none were files we could list.)`
+      );
+    }
+
+    const info = resolveRecentFolder();
+    if (
+      scan.source === "fallback" ||
+      (info.configured && !info.prefIsValid && scan.source !== "none")
+    ) {
+      lines.push("");
+      lines.push(
+        "⚠️ Your configured folder isn't a valid directory: " +
+          (info.configured || "(empty)")
+      );
+      lines.push("Falling back to system default. Click 📁 to fix.");
+    }
+
+    for (const line of lines) {
+      const div = document.createElementNS(ns, "div");
+      div.textContent = line;
+      wrap.appendChild(div);
+    }
+    return wrap;
   }
 
   async _collectFromDownloadHistory() {
@@ -367,26 +521,56 @@ class EasyFilesController {
   // loop is O(N) async calls and gets unusably slow on large folders (the
   // user's Downloads has ~7700 files). nsIFile.directoryEntries hits the OS
   // once and lets us read leafName/fileSize/lastModifiedTime cheaply per entry.
+  //
+  // Returns a scan record:
+  //   { items, path, source, totalEntries, error }
+  //  - items: the {path,name,size,mtime,mime} objects suitable for the UI
+  //  - path: the actual folder we scanned (may differ from the configured
+  //    pref if we fell back to a default)
+  //  - source: "pref" | "default" | "fallback" | "none"
+  //  - totalEntries: count of every entry the OS returned, before filtering
+  //    out subdirectories/dotfiles. Lets the empty state distinguish
+  //    "folder really has nothing" from "folder is full of subfolders".
+  //  - error: human-readable reason this scan produced nothing, or null.
   _collectFromFolder() {
-    const folder = getRecentFolderPath();
-    if (!folder) return [];
-    let dir;
-    try {
-      dir = new FileUtils.File(folder);
-      if (!dir.exists() || !dir.isDirectory()) return [];
-    } catch (e) {
-      console.warn("EasyFiles: invalid folder", folder, e);
-      return [];
+    const info = resolveRecentFolder();
+    const empty = (error = null) => ({
+      items: [],
+      path: info.path,
+      source: info.source,
+      totalEntries: 0,
+      error,
+    });
+
+    if (!info.path) {
+      return empty(
+        info.configured
+          ? `No usable folder. Configured "${info.configured}" is invalid and no system Downloads folder was found.`
+          : "No system Downloads folder was found."
+      );
     }
 
-    const out = [];
+    let dir;
+    try {
+      dir = new FileUtils.File(info.path);
+      if (!dir.exists() || !dir.isDirectory()) {
+        return empty("Path is not a directory: " + info.path);
+      }
+    } catch (e) {
+      console.warn("EasyFiles: invalid folder", info.path, e);
+      return empty("Could not open folder: " + (e?.message || e));
+    }
+
     let entries;
     try {
       entries = dir.directoryEntries;
     } catch (e) {
-      console.warn("EasyFiles: directoryEntries failed", folder, e);
-      return [];
+      console.warn("EasyFiles: directoryEntries failed", info.path, e);
+      return empty("Could not enumerate folder: " + (e?.message || e));
     }
+
+    const out = [];
+    let total = 0;
     while (true) {
       let file;
       try {
@@ -395,6 +579,7 @@ class EasyFilesController {
       } catch {
         break;
       }
+      total++;
       try {
         if (!file.isFile()) continue;
         const name = file.leafName;
@@ -408,7 +593,14 @@ class EasyFilesController {
         });
       } catch {}
     }
-    return out;
+
+    return {
+      items: out,
+      path: info.path,
+      source: info.source,
+      totalEntries: total,
+      error: null,
+    };
   }
 
   async _pickFolder() {
@@ -766,6 +958,9 @@ class EasyFilesController {
         break;
       case "toggle-source":
         this._toggleSource();
+        break;
+      case "refresh-recent":
+        this._loadRecent();
         break;
     }
   }
