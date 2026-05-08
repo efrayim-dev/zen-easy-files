@@ -538,6 +538,7 @@ class EasyFilesController {
         "path=" + scan.path,
         "rawEntries=" + scan.totalEntries,
         "items=" + scan.items.length,
+        "acceptParts=" + acceptParts.length,
         "took=" + (Date.now() - t0) + "ms",
         scan.error ? "error=" + scan.error : ""
       );
@@ -545,17 +546,12 @@ class EasyFilesController {
       const items = scan.items;
       items.sort((a, b) => b.mtime - a.mtime);
 
-      const matching = acceptParts.length
-        ? items.filter((it) => acceptMatches(it.name, it.mime, acceptParts))
-        : items;
-      const others = acceptParts.length
-        ? items.filter((it) => !acceptMatches(it.name, it.mime, acceptParts))
-        : [];
-
-      const top = matching.slice(0, limit);
-      const remaining = Math.max(0, limit - top.length);
-      const filler = remaining > 0 ? others.slice(0, remaining) : [];
-      const display = top.concat(filler);
+      // ALWAYS show the latest N recent files regardless of the page's accept
+      // filter. Sheets sends a strict spreadsheet-only mime list; Imgur sends a
+      // wide image/video list. We want both panels to look the same — same set
+      // of recently-downloaded files. We just visually dim items that don't
+      // match the site's filter so the user knows the site might reject them.
+      const display = items.slice(0, limit);
       this.recentDownloads = display;
 
       if (!display.length) {
@@ -565,15 +561,19 @@ class EasyFilesController {
       }
 
       list.innerHTML = "";
-      if (acceptParts.length && top.length === 0 && filler.length > 0) {
+      const nonMatchInDisplay = acceptParts.length
+        ? display.filter((it) => !acceptMatches(it.name, it.mime, acceptParts))
+            .length
+        : 0;
+      if (acceptParts.length && nonMatchInDisplay === display.length) {
         const note = document.createElementNS(
           "http://www.w3.org/1999/xhtml",
           "div"
         );
         note.className = "ef-note";
-        note.textContent = `No recent files match this site's filter (${escapeHtml(
+        note.textContent = `This site only accepts: ${escapeHtml(
           accept
-        )}). Showing latest files anyway — the site may reject non-matching uploads.`;
+        )}. Pick a matching file or "Browse files…" for the system picker.`;
         list.appendChild(note);
       }
       for (const item of display) {
@@ -583,7 +583,7 @@ class EasyFilesController {
         list.appendChild(this._makeRow(item, matches));
       }
     } catch (e) {
-      console.error("EasyFiles: load recent failed", e);
+      console.error("[EasyFiles] load recent failed", e);
       list.innerHTML = `<div class="ef-empty">Error: ${escapeHtml(
         String(e.message || e)
       )}</div>`;
