@@ -284,9 +284,13 @@ class EasyFilesController {
     window.addEventListener("EasyFiles:RequestPicker", (e) =>
       this._onRequest(e)
     );
+    console.log(
+      "[EasyFiles] controller initialized, panel built, listening for EasyFiles:RequestPicker"
+    );
   }
 
   async _onRequest(event) {
+    console.log("[EasyFiles] _onRequest fired, detail=", event.detail);
     const { detail } = event;
     this.activeBrowser = detail.browser;
     this.activeWindowGlobal = detail.windowGlobal;
@@ -303,7 +307,27 @@ class EasyFilesController {
       window.gBrowser?.selectedBrowser ||
       document.documentElement;
 
-    this.panel.openPopup(anchor, "after_start", 0, 0, false, false);
+    console.log(
+      "[EasyFiles] opening panel; anchor=",
+      anchor?.tagName || anchor,
+      "panel=",
+      this.panel?.id,
+      "panelState(before)=",
+      this.panel?.state
+    );
+    try {
+      this.panel.openPopup(anchor, "after_start", 0, 0, false, false);
+    } catch (e) {
+      console.error("[EasyFiles] openPopup threw:", e);
+    }
+    // Log panel state on the next tick so we can see if it actually opened
+    // or if XUL closed it immediately.
+    Promise.resolve().then(() => {
+      console.log(
+        "[EasyFiles] panel state after openPopup:",
+        this.panel?.state
+      );
+    });
     this._loadRecent();
   }
 
