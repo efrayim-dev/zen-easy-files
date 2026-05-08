@@ -17,6 +17,7 @@
 
 export class EasyFilesChild extends JSWindowActorChild {
   pendingInput = null;
+  pendingLabel = null; // matched <label> (if any) — some libraries listen here
   pendingApi = null; // { resolve, reject, originalFn, win, multiple }
   _bypassNext = false;
   _injected = false;
@@ -166,6 +167,7 @@ export class EasyFilesChild extends JSWindowActorChild {
     //    This is the critical case for label-uses-`for=` patterns (Imgur,
     //    many React/Tailwind upload widgets) where the synthesized INPUT
     //    click is non-cancelable, so we MUST cancel the LABEL click instead.
+    let matchedLabel = null;
     if (!target) {
       for (const node of path) {
         if (node?.tagName !== "LABEL") continue;
@@ -175,6 +177,7 @@ export class EasyFilesChild extends JSWindowActorChild {
         } catch {}
         if (ctrl?.tagName === "INPUT" && ctrl.type === "file") {
           target = ctrl;
+          matchedLabel = node;
           matchedVia = "label-control";
           break;
         }
@@ -232,6 +235,7 @@ export class EasyFilesChild extends JSWindowActorChild {
     }
 
     this.pendingInput = target;
+    this.pendingLabel = matchedLabel;
 
     let accept = "";
     let multiple = false;
@@ -309,6 +313,7 @@ export class EasyFilesChild extends JSWindowActorChild {
           return;
         }
         this.pendingInput = null;
+        this.pendingLabel = null;
         return;
       }
 
@@ -346,6 +351,7 @@ export class EasyFilesChild extends JSWindowActorChild {
         if (!this.pendingInput) return;
         const input = this.pendingInput;
         this.pendingInput = null;
+        this.pendingLabel = null;
         this._bypassNext = true;
         try {
           if (typeof input.showPicker === "function") input.showPicker();
@@ -361,10 +367,26 @@ export class EasyFilesChild extends JSWindowActorChild {
   }
 
   _setFilesOnInput(files) {
-    if (!this.pendingInput) return;
+    if (!this.pendingInput) {
+      console.warn("[EasyFilesChild] _setFilesOnInput: no pendingInput");
+      return;
+    }
     const win = this.contentWindow;
     if (!win) {
       this.pendingInput = null;
+      this.pendingLabel = null;
+      return;
+    }
+
+    const input = this.pendingInput;
+    const label = this.pendingLabel;
+    this.pendingInput = null;
+    this.pendingLabel = null;
+
+    if (!input.isConnected) {
+      console.warn(
+        "[EasyFilesChild] target input is no longer in the DOM; site may have replaced it. Aborting file drop."
+      );
       return;
     }
 
@@ -382,17 +404,71 @@ export class EasyFilesChild extends JSWindowActorChild {
         });
         dt.items.add(file);
       }
-      this.pendingInput.files = dt.files;
-      this.pendingInput.dispatchEvent(
-        new win.Event("input", { bubbles: true })
-      );
-      this.pendingInput.dispatchEvent(
-        new win.Event("change", { bubbles: true })
+
+      // Use the native setter on HTMLInputElement.prototype.files so any value-
+      // tracking proxy from React/Vue/etc. sees a real assignment. Direct
+      // `input.files = ...` can be a silent no-op when the framework has
+      // wrapped the property descriptor.
+      let setterUsed = "direct";
+      try {
+        const proto = win.HTMLInputElement?.prototype;
+        const desc =
+          proto && Object.getOwnPropertyDescriptor(proto, "files");
+        if (desc?.set) {
+          desc.set.call(input, dt.files);
+          setterUsed = "native-setter";
+        } else {
+          input.files = dt.files;
+        }
+      } catch (e) {
+        console.warn(
+          "[EasyFilesChild] native files setter failed, falling back",
+          e
+        );
+        try {
+          input.files = dt.files;
+        } catch (e2) {
+          console.error(
+            "[EasyFilesChild] direct files assignment also failed",
+            e2
+          );
+        }
+      }
+
+      const inputEvt = new win.Event("input", {
+        bubbles: true,
+        composed: true,
+      });
+      const changeEvt = new win.Event("change", {
+        bubbles: true,
+        composed: true,
+      });
+      input.dispatchEvent(inputEvt);
+      input.dispatchEvent(changeEvt);
+
+      // Some upload widgets attach their listener to the LABEL wrapper, not the
+      // hidden input itself. Re-fire change there too — harmless if nobody is
+      // listening, decisive if they are.
+      if (label && label.isConnected) {
+        try {
+          label.dispatchEvent(
+            new win.Event("change", { bubbles: true, composed: true })
+          );
+        } catch {}
+      }
+
+      console.log(
+        "[EasyFilesChild] files dropped:",
+        files.map((f) => `${f.name}(${f.bytes?.byteLength ?? f.bytes?.length}b)`).join(", "),
+        "setter=" + setterUsed,
+        "input.files.length=" + input.files?.length,
+        "input=",
+        input,
+        "alsoFiredOnLabel=" + !!(label && label.isConnected)
       );
     } catch (e) {
-      console.error("EasyFilesChild: setting files failed", e);
+      console.error("[EasyFilesChild] setting files failed", e);
     }
-    this.pendingInput = null;
   }
 
   // Resolve a pending showOpenFilePicker() call with the user-picked files.
@@ -462,6 +538,7 @@ export class EasyFilesChild extends JSWindowActorChild {
 
   didDestroy() {
     this.pendingInput = null;
+    this.pendingLabel = null;
     if (this.pendingApi) {
       try {
         this.pendingApi.reject(
