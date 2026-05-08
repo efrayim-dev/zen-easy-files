@@ -393,11 +393,21 @@ export class EasyFilesChild extends JSWindowActorChild {
     try {
       const dt = new win.DataTransfer();
       for (const fd of files) {
-        const view =
-          fd.bytes instanceof Uint8Array ? fd.bytes : new Uint8Array(fd.bytes);
-        const arrayBuf = new win.ArrayBuffer(view.byteLength);
-        new win.Uint8Array(arrayBuf).set(view);
-        const blob = new win.Blob([arrayBuf], { type: fd.type || "" });
+        // The bytes arrived from the parent via sendAsyncMessage and live in
+        // *this* (chrome) compartment. We can't pass that buffer directly into
+        // a content-scope Blob constructor — Firefox's cross-compartment
+        // security wrappers throw "Permission denied to access object". The
+        // fix is to structured-clone the underlying ArrayBuffer INTO the
+        // content scope using Cu.cloneInto, then build the Blob from that.
+        const sourceBuffer =
+          fd.bytes instanceof Uint8Array
+            ? fd.bytes.buffer.slice(
+                fd.bytes.byteOffset,
+                fd.bytes.byteOffset + fd.bytes.byteLength
+              )
+            : fd.bytes;
+        const contentBuffer = Cu.cloneInto(sourceBuffer, win);
+        const blob = new win.Blob([contentBuffer], { type: fd.type || "" });
         const file = new win.File([blob], fd.name, {
           type: fd.type || "",
           lastModified: fd.lastModified || Date.now(),
