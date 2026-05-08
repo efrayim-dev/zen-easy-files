@@ -17,17 +17,14 @@ export class EasyFilesChild extends JSWindowActorChild {
 
   handleEvent(event) {
     if (event.type !== "click") return;
-    const initialTarget = event.composedPath?.()[0] || event.target;
-    if (initialTarget?.tagName === "INPUT" && initialTarget.type === "file") {
-      console.log(
-        "[EasyFilesChild] file input click intercepted",
-        initialTarget
-      );
-    }
 
+    // Walk composedPath so we catch clicks whose initial target is the input
+    // OR a label/wrapper that retargets to one. composedPath also crosses
+    // shadow boundaries, which a couple of upload widgets use.
     let target = null;
+    let path;
     if (typeof event.composedPath === "function") {
-      const path = event.composedPath();
+      path = event.composedPath();
       for (const node of path) {
         if (node?.tagName === "INPUT" && node.type === "file") {
           target = node;
@@ -42,6 +39,17 @@ export class EasyFilesChild extends JSWindowActorChild {
       }
     }
 
+    // From here we know a file-input was the (semantic) target of a click.
+    console.log(
+      "[EasyFilesChild] file input click",
+      "trusted=" + event.isTrusted,
+      "shift=" + event.shiftKey,
+      "disabled=" + target.disabled,
+      "bypassNext=" + this._bypassNext,
+      "target=",
+      target
+    );
+
     if (target.disabled) return;
 
     if (this._bypassNext) {
@@ -52,8 +60,13 @@ export class EasyFilesChild extends JSWindowActorChild {
     // Hold Shift to skip our picker and go straight to the native picker.
     if (event.shiftKey) return;
 
-    // Only intercept genuine user clicks.
-    if (!event.isTrusted) return;
+    // NOTE: We deliberately do NOT bail on !event.isTrusted here. Many UI
+    // libraries (Google Drive Picker, React-Dropzone, Material UI, etc.)
+    // implement Browse buttons as a styled element whose onclick calls
+    // hiddenInput.click() — that synthesized click has isTrusted=false but
+    // is still a user-initiated file picker invocation. The platform's
+    // user-activation rules block silent automated picker opens, so accepting
+    // untrusted clicks here is safe.
 
     event.preventDefault();
     event.stopPropagation();
