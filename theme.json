@@ -1,0 +1,23 @@
+{
+  "id": "ZenEasyFiles",
+  "name": "Easy Files",
+  "description": "Opera-like file picker with recent downloads, clipboard, and screenshots.",
+  "author": "efray",
+  "version": "1.0.0",
+  "homepage": "https://github.com/efray/zen-easy-files",
+  "style": {
+    "chrome": "userChrome.css"
+  },
+  "scripts": {
+    "easy-files.uc.mjs": {
+      "name": "Easy Files",
+      "description": "Intercepts file-input clicks and shows a custom upload picker.",
+      "include": ["chrome://browser/content/browser.xhtml"]
+    }
+  },
+  "preferences": "preferences.json",
+  "tags": ["chrome", "productivity", "uploads"],
+  "createdAt": "2026-05-08",
+  "updatedAt": "2026-05-08",
+  "fork": ["zen"]
+}

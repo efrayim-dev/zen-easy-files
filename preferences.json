@@ -1,0 +1,14 @@
+[
+  {
+    "property": "extensions.easy-files.enabled",
+    "label": "Enable Easy Files picker",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "extensions.easy-files.recent-limit",
+    "label": "Number of recent downloads to show (1–50)",
+    "type": "string",
+    "defaultValue": "15"
+  }
+]

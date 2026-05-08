@@ -1,0 +1,285 @@
+/* Zen Easy Files panel styling. Matches Zen's modern aesthetic with rounded
+ * corners, subtle shadows, and respects the system color scheme. */
+
+#easy-files-panel {
+  --ef-bg: light-dark(#ffffff, #1c1b22);
+  --ef-bg-alt: light-dark(#f5f5f7, #2b2a33);
+  --ef-fg: light-dark(#15141a, #fbfbfe);
+  --ef-fg-muted: light-dark(#5b5b66, #b1b1bd);
+  --ef-border: light-dark(#e0e0e6, #3a3944);
+  --ef-accent: light-dark(#7e62b8, #a48bdf);
+  --ef-accent-fg: #ffffff;
+  --ef-hover: light-dark(rgba(0, 0, 0, 0.05), rgba(255, 255, 255, 0.08));
+  --ef-selected: light-dark(rgba(126, 98, 184, 0.12), rgba(164, 139, 223, 0.18));
+  --ef-radius: 10px;
+  --ef-radius-sm: 6px;
+  font: message-box;
+}
+
+#easy-files-panel::part(content) {
+  padding: 0;
+  border-radius: var(--ef-radius);
+  overflow: hidden;
+}
+
+#easy-files-panel .ef-root {
+  display: flex;
+  flex-direction: column;
+  width: 460px;
+  max-width: 520px;
+  min-height: 360px;
+  max-height: 540px;
+  background: var(--ef-bg);
+  color: var(--ef-fg);
+  border-radius: var(--ef-radius);
+  overflow: hidden;
+}
+
+#easy-files-panel .ef-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 8px;
+  border-bottom: 1px solid var(--ef-border);
+}
+
+#easy-files-panel .ef-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+#easy-files-panel .ef-close {
+  border: 0;
+  background: transparent;
+  color: var(--ef-fg-muted);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+#easy-files-panel .ef-close:hover {
+  background: var(--ef-hover);
+  color: var(--ef-fg);
+}
+
+#easy-files-panel .ef-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 10px 0;
+  border-bottom: 1px solid var(--ef-border);
+}
+
+#easy-files-panel .ef-tab {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--ef-fg-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: var(--ef-radius-sm) var(--ef-radius-sm) 0 0;
+  position: relative;
+}
+#easy-files-panel .ef-tab:hover {
+  color: var(--ef-fg);
+  background: var(--ef-hover);
+}
+#easy-files-panel .ef-tab.active {
+  color: var(--ef-fg);
+}
+#easy-files-panel .ef-tab.active::after {
+  content: "";
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  bottom: -1px;
+  height: 2px;
+  background: var(--ef-accent);
+  border-radius: 2px;
+}
+
+#easy-files-panel .ef-body {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+#easy-files-panel .ef-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 8px 4px;
+  overflow: hidden;
+}
+#easy-files-panel .ef-pane.hidden,
+#easy-files-panel .hidden {
+  display: none !important;
+}
+
+#easy-files-panel .ef-pane-actions {
+  padding: 6px 4px 2px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+#easy-files-panel .ef-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#easy-files-panel .ef-empty {
+  padding: 30px 16px;
+  text-align: center;
+  color: var(--ef-fg-muted);
+  font-size: 12.5px;
+}
+
+#easy-files-panel .ef-item {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: var(--ef-radius-sm);
+  cursor: pointer;
+  transition: background 0.08s ease;
+}
+#easy-files-panel .ef-item:hover {
+  background: var(--ef-hover);
+}
+#easy-files-panel .ef-item:focus-visible {
+  outline: 2px solid var(--ef-accent);
+  outline-offset: -2px;
+}
+#easy-files-panel .ef-item.selected {
+  background: var(--ef-selected);
+}
+#easy-files-panel .ef-item.selected .ef-check {
+  background: var(--ef-accent);
+  border-color: var(--ef-accent);
+}
+#easy-files-panel .ef-item.selected .ef-check::after {
+  content: "✓";
+  color: var(--ef-accent-fg);
+  font-size: 12px;
+  line-height: 1;
+}
+
+#easy-files-panel .ef-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--ef-radius-sm);
+  background: var(--ef-bg-alt);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+}
+#easy-files-panel .ef-icon-thumb {
+  background-color: transparent;
+}
+#easy-files-panel .ef-icon-file::before {
+  content: "📄";
+  font-size: 18px;
+  opacity: 0.7;
+}
+#easy-files-panel .ef-icon-image:not(.ef-icon-thumb)::before {
+  content: "🖼";
+  font-size: 18px;
+  opacity: 0.7;
+}
+
+#easy-files-panel .ef-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+#easy-files-panel .ef-name {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#easy-files-panel .ef-sub {
+  font-size: 11.5px;
+  color: var(--ef-fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#easy-files-panel .ef-check {
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--ef-border);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+#easy-files-panel .ef-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-top: 1px solid var(--ef-border);
+  background: var(--ef-bg-alt);
+  gap: 8px;
+}
+#easy-files-panel .ef-footer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+#easy-files-panel .ef-info {
+  font-size: 12px;
+  color: var(--ef-fg-muted);
+}
+
+#easy-files-panel .ef-action {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ef-fg);
+  padding: 7px 14px;
+  border-radius: var(--ef-radius-sm);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.08s ease, border-color 0.08s ease;
+}
+#easy-files-panel .ef-action:hover {
+  background: var(--ef-hover);
+}
+#easy-files-panel .ef-secondary {
+  border-color: var(--ef-border);
+}
+#easy-files-panel .ef-primary {
+  background: var(--ef-accent);
+  color: var(--ef-accent-fg);
+  border-color: var(--ef-accent);
+}
+#easy-files-panel .ef-primary:hover {
+  filter: brightness(1.08);
+  background: var(--ef-accent);
+}
