@@ -182,11 +182,20 @@ function injectStyle() {
 }
 
 function buildPanel() {
-  let panel = document.getElementById(PANEL_ID);
-  if (panel) return panel;
+  // Always rebuild. If a previous script load left a panel behind, the new
+  // controller would otherwise attach listeners to stale HTML that may not
+  // match this script version. Cleanest path is to nuke and rebuild.
+  const stale = document.getElementById(PANEL_ID);
+  if (stale) {
+    try {
+      stale.hidePopup?.();
+    } catch {}
+    stale.remove();
+    console.log("[EasyFiles] removed stale panel and rebuilding");
+  }
 
   const ns = "http://www.w3.org/1999/xhtml";
-  panel = document.createXULElement("panel");
+  let panel = document.createXULElement("panel");
   panel.id = PANEL_ID;
   panel.setAttribute("type", "arrow");
   panel.setAttribute("noautofocus", "false");
@@ -249,6 +258,16 @@ function buildPanel() {
   const popupSet =
     document.getElementById("mainPopupSet") || document.documentElement;
   popupSet.appendChild(panel);
+
+  const actionBtns = panel.querySelectorAll("[data-action]");
+  console.log(
+    "[EasyFiles] buildPanel done; rootChildren=",
+    root.children.length,
+    "actionButtons=",
+    actionBtns.length,
+    "submitBtn=",
+    !!panel.querySelector('[data-action="submit"]')
+  );
   return panel;
 }
 
@@ -1006,6 +1025,19 @@ class EasyFilesController {
   _updateInfo() {
     const info = this.panel.querySelector('[data-info="info"]');
     const submitBtn = this.panel.querySelector('[data-action="submit"]');
+    if (!info || !submitBtn) {
+      console.error("[EasyFiles] _updateInfo: panel elements missing", {
+        panelId: this.panel?.id,
+        panelInDoc: !!this.panel?.ownerDocument?.contains(this.panel),
+        infoFound: !!info,
+        submitFound: !!submitBtn,
+        actionButtons: Array.from(
+          this.panel?.querySelectorAll("[data-action]") || []
+        ).map((b) => b.dataset.action),
+        rootChildren: this.panel?.querySelector(".ef-root")?.children.length,
+      });
+      return;
+    }
     const count = this.selectedFiles.length;
     if (count) {
       info.textContent = `${count} file${count > 1 ? "s" : ""} selected`;
