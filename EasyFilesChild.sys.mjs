@@ -8,8 +8,22 @@ export class EasyFilesChild extends JSWindowActorChild {
   pendingInput = null;
   _bypassNext = false;
 
+  actorCreated() {
+    console.log(
+      "[EasyFilesChild] actor created in",
+      this.contentWindow?.location?.href
+    );
+  }
+
   handleEvent(event) {
     if (event.type !== "click") return;
+    const initialTarget = event.composedPath?.()[0] || event.target;
+    if (initialTarget?.tagName === "INPUT" && initialTarget.type === "file") {
+      console.log(
+        "[EasyFilesChild] file input click intercepted",
+        initialTarget
+      );
+    }
 
     let target = null;
     if (typeof event.composedPath === "function") {

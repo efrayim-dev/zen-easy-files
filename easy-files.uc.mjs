@@ -704,16 +704,33 @@ function escapeHtml(s) {
 }
 
 function init() {
-  setupDefaults();
-  if (!Services.prefs.getBoolPref(PREF_ENABLED, true)) return;
+  console.log("[EasyFiles] init() starting; SCRIPT_DIR =", SCRIPT_DIR);
+  try {
+    setupDefaults();
+    if (!Services.prefs.getBoolPref(PREF_ENABLED, true)) {
+      console.log("[EasyFiles] disabled by pref, exiting");
+      return;
+    }
 
-  injectStyle();
-  registerActor();
+    injectStyle();
+    registerActor();
+    console.log("[EasyFiles] actor registered");
 
-  const ctrl = new EasyFilesController();
-  ctrl.init();
-  window._easyFilesController = ctrl;
+    const ctrl = new EasyFilesController();
+    ctrl.init();
+    window._easyFilesController = ctrl;
+    console.log(
+      "[EasyFiles] ready — click any <input type=file> on a webpage to test"
+    );
+  } catch (e) {
+    console.error("[EasyFiles] init failed:", e);
+  }
 }
+
+console.log(
+  "[EasyFiles] script loaded in window:",
+  window.location.href
+);
 
 if (window.location.href === "chrome://browser/content/browser.xhtml") {
   if (window.gBrowserInit?.delayedStartupFinished) {
