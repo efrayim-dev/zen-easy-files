@@ -324,12 +324,30 @@ class EasyFilesController {
       );
     });
 
-    window.addEventListener("EasyFiles:RequestPicker", (e) =>
-      this._onRequest(e)
-    );
+    // Bind once so we have a stable reference to remove later. Without this,
+    // every script reload (Sine update / dev refresh) stacks another window
+    // listener pointing at a dead controller, and a single click triggers
+    // _onRequest on every previous instance whose panel has long since been
+    // removed from the DOM.
+    this._onRequestBound = (e) => this._onRequest(e);
+    window.addEventListener("EasyFiles:RequestPicker", this._onRequestBound);
     console.log(
       "[EasyFiles] controller initialized, panel built, listening for EasyFiles:RequestPicker"
     );
+  }
+
+  destroy() {
+    if (this._onRequestBound) {
+      try {
+        window.removeEventListener(
+          "EasyFiles:RequestPicker",
+          this._onRequestBound
+        );
+      } catch {}
+      this._onRequestBound = null;
+    }
+    this.panel = null;
+    console.log("[EasyFiles] previous controller destroyed");
   }
 
   async _onRequest(event) {
@@ -1199,6 +1217,15 @@ function collapsePath(p) {
 function init() {
   console.log("[EasyFiles] init() starting; SCRIPT_DIR =", SCRIPT_DIR);
   try {
+    if (window._easyFilesController) {
+      try {
+        window._easyFilesController.destroy();
+      } catch (e) {
+        console.warn("[EasyFiles] previous destroy threw:", e);
+      }
+      window._easyFilesController = null;
+    }
+
     setupDefaults();
     if (!Services.prefs.getBoolPref(PREF_ENABLED, true)) {
       console.log("[EasyFiles] disabled by pref, exiting");
