@@ -254,28 +254,57 @@ class EasyFilesController {
         .map((s) => s.trim())
         .filter(Boolean);
 
+      const t0 = Date.now();
       const items =
         this._getRecentSource() === "downloads"
-          ? await this._collectFromDownloadHistory(acceptParts)
-          : await this._collectFromFolder(acceptParts);
+          ? await this._collectFromDownloadHistory()
+          : this._collectFromFolder();
+      console.log(
+        `[EasyFiles] collected ${items.length} items in ${Date.now() - t0}ms`
+      );
 
       items.sort((a, b) => b.mtime - a.mtime);
-      const top = items.slice(0, limit);
-      this.recentDownloads = top;
 
-      if (!top.length) {
+      const matching = acceptParts.length
+        ? items.filter((it) => acceptMatches(it.name, it.mime, acceptParts))
+        : items;
+      const others = acceptParts.length
+        ? items.filter((it) => !acceptMatches(it.name, it.mime, acceptParts))
+        : [];
+
+      const top = matching.slice(0, limit);
+      const remaining = Math.max(0, limit - top.length);
+      const filler = remaining > 0 ? others.slice(0, remaining) : [];
+      const display = top.concat(filler);
+      this.recentDownloads = display;
+
+      if (!display.length) {
         const source = this._getRecentSource();
         const reason =
           source === "downloads"
-            ? "No matching items in download history."
-            : "No matching files in this folder.";
+            ? "No items in download history."
+            : "Folder is empty or unreadable.";
         list.innerHTML = `<div class="ef-empty">${reason}</div>`;
         return;
       }
 
       list.innerHTML = "";
-      for (const item of top) {
-        list.appendChild(this._makeRow(item));
+      if (acceptParts.length && top.length === 0 && filler.length > 0) {
+        const note = document.createElementNS(
+          "http://www.w3.org/1999/xhtml",
+          "div"
+        );
+        note.className = "ef-note";
+        note.textContent = `No recent files match this site's filter (${escapeHtml(
+          accept
+        )}). Showing latest files anyway — the site may reject non-matching uploads.`;
+        list.appendChild(note);
+      }
+      for (const item of display) {
+        const matches = !acceptParts.length
+          ? true
+          : acceptMatches(item.name, item.mime, acceptParts);
+        list.appendChild(this._makeRow(item, matches));
       }
     } catch (e) {
       console.error("EasyFiles: load recent failed", e);
@@ -285,7 +314,7 @@ class EasyFilesController {
     }
   }
 
-  async _collectFromDownloadHistory(acceptParts) {
+  async _collectFromDownloadHistory() {
     const downloadList = await Downloads.getList(Downloads.ALL);
     const downloads = await downloadList.getAll();
     const out = [];
@@ -299,8 +328,6 @@ class EasyFilesController {
           dl.contentType && dl.contentType !== "application/octet-stream"
             ? dl.contentType
             : guessMimeType(name);
-        if (acceptParts.length && !acceptMatches(name, mime, acceptParts))
-          continue;
         out.push({
           path: dl.target.path,
           name,
@@ -313,31 +340,48 @@ class EasyFilesController {
     return out;
   }
 
-  async _collectFromFolder(acceptParts) {
+  // Synchronous nsIFile-based listing. Reading metadata via IOUtils.stat() in a
+  // loop is O(N) async calls and gets unusably slow on large folders (the
+  // user's Downloads has ~7700 files). nsIFile.directoryEntries hits the OS
+  // once and lets us read leafName/fileSize/lastModifiedTime cheaply per entry.
+  _collectFromFolder() {
     const folder = getRecentFolderPath();
     if (!folder) return [];
-    let entries;
+    let dir;
     try {
-      entries = await IOUtils.getChildren(folder);
+      dir = new FileUtils.File(folder);
+      if (!dir.exists() || !dir.isDirectory()) return [];
     } catch (e) {
-      console.warn("EasyFiles: getChildren failed for", folder, e);
+      console.warn("EasyFiles: invalid folder", folder, e);
       return [];
     }
+
     const out = [];
-    for (const path of entries) {
+    let entries;
+    try {
+      entries = dir.directoryEntries;
+    } catch (e) {
+      console.warn("EasyFiles: directoryEntries failed", folder, e);
+      return [];
+    }
+    while (true) {
+      let file;
       try {
-        const stat = await IOUtils.stat(path);
-        if (stat.type !== "regular") continue;
-        const name = path.split(/[\\/]/).pop();
-        const mime = guessMimeType(name);
-        if (acceptParts.length && !acceptMatches(name, mime, acceptParts))
-          continue;
+        if (!entries.hasMoreElements()) break;
+        file = entries.getNext().QueryInterface(Ci.nsIFile);
+      } catch {
+        break;
+      }
+      try {
+        if (!file.isFile()) continue;
+        const name = file.leafName;
+        if (name.startsWith(".")) continue;
         out.push({
-          path,
+          path: file.path,
           name,
-          size: stat.size,
-          mtime: stat.lastModified,
-          mime,
+          size: file.fileSize,
+          mtime: file.lastModifiedTime,
+          mime: guessMimeType(name),
         });
       } catch {}
     }
@@ -378,13 +422,16 @@ class EasyFilesController {
     this._loadRecent();
   }
 
-  _makeRow(item) {
+  _makeRow(item, matchesAccept = true) {
     const ns = "http://www.w3.org/1999/xhtml";
     const row = document.createElementNS(ns, "div");
-    row.className = "ef-item";
+    row.className = "ef-item" + (matchesAccept ? "" : " ef-item-nomatch");
     row.dataset.path = item.path;
     row.dataset.name = item.name;
     row.tabIndex = 0;
+    if (!matchesAccept) {
+      row.title = "This file does not match the site's accept filter; the site may reject it.";
+    }
 
     const isImage = (item.mime || "").startsWith("image/");
 

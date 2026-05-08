@@ -186,6 +186,17 @@
   font-size: 12.5px;
 }
 
+#easy-files-panel .ef-note {
+  margin: 2px 4px 6px;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--ef-fg-muted);
+  background: var(--ef-bg-alt);
+  border: 1px solid var(--ef-border);
+  border-radius: var(--ef-radius-sm);
+}
+
 #easy-files-panel .ef-item {
   display: grid;
   grid-template-columns: 36px 1fr auto;
@@ -205,6 +216,12 @@
 }
 #easy-files-panel .ef-item.selected {
   background: var(--ef-selected);
+}
+#easy-files-panel .ef-item-nomatch {
+  opacity: 0.55;
+}
+#easy-files-panel .ef-item-nomatch:hover {
+  opacity: 0.85;
 }
 #easy-files-panel .ef-item.selected .ef-check {
   background: var(--ef-accent);
