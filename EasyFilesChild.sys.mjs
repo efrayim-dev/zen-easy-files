@@ -18,6 +18,19 @@ export class EasyFilesChild extends JSWindowActorChild {
   handleEvent(event) {
     if (event.type !== "click") return;
 
+    // Diagnostic ping so we can confirm in the Browser Console that the actor
+    // is alive and receiving clicks. Helps distinguish "script not loaded"
+    // from "loaded but click target wasn't a file input".
+    const initialTag = (event.target?.tagName || "?") + (
+      event.target?.type ? `[type=${event.target.type}]` : ""
+    );
+    console.log(
+      "[EasyFilesChild] click",
+      "tag=" + initialTag,
+      "trusted=" + event.isTrusted,
+      "url=" + (this.contentWindow?.location?.href || "?")
+    );
+
     // Walk composedPath so we catch clicks whose initial target is the input
     // OR a label/wrapper that retargets to one. composedPath also crosses
     // shadow boundaries, which a couple of upload widgets use.

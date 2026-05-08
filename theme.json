@@ -3,7 +3,7 @@
   "name": "Easy Files",
   "description": "Opera-like file picker with recent downloads, clipboard, and screenshots.",
   "author": "efray",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "homepage": "https://github.com/efray/zen-easy-files",
   "style": {
     "chrome": "userChrome.css"
