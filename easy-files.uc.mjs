@@ -165,7 +165,19 @@ function registerActor() {
     },
     child: {
       esModuleURI: SCRIPT_DIR + "EasyFilesChild.sys.mjs",
-      events: { click: { capture: true, mozSystemGroup: true } },
+      // We need the actor (and its showOpenFilePicker override) ALIVE in every
+      // frame *before* page script runs that might capture native references.
+      // Google Sheets / Drive Picker iframes do exactly that — they snapshot
+      // window.showOpenFilePicker at module load. So we register on:
+      //   DOMDocElementInserted: earliest possible — fires before any author
+      //     script in the document executes.
+      //   pageshow: re-init after bf-cache restore (back/forward).
+      //   click: still our primary trigger for <input type="file"> flows.
+      events: {
+        DOMDocElementInserted: { capture: true },
+        pageshow: { capture: true },
+        click: { capture: true, mozSystemGroup: true },
+      },
     },
     allFrames: true,
     matches: ["*://*/*", "file:///*"],

@@ -30,6 +30,19 @@ export class EasyFilesChild extends JSWindowActorChild {
     this._injectAPIOverride();
   }
 
+  // Re-attempt the override on early lifecycle events so we win the race
+  // against page scripts that snapshot native references at module load.
+  handleEvent(event) {
+    if (event.type === "DOMDocElementInserted" || event.type === "pageshow") {
+      this._injectAPIOverride();
+      return;
+    }
+    if (event.type === "click") {
+      this._handleClick(event);
+      return;
+    }
+  }
+
   // Replace window.showOpenFilePicker with a chrome-side wrapper that routes
   // through the EasyFiles panel. We do this in actorCreated() so the override
   // is in place before any page script captures a reference to the original.
@@ -37,7 +50,17 @@ export class EasyFilesChild extends JSWindowActorChild {
     if (this._injected) return;
     const win = this.contentWindow;
     if (!win) return;
-    if (typeof win.showOpenFilePicker !== "function") return;
+    if (typeof win.showOpenFilePicker !== "function") {
+      // Iframes need permissions-policy: allow="cross-origin-isolated; ..."
+      // for File System Access API. If the picker iframe doesn't have it,
+      // showOpenFilePicker simply isn't on the window — the page must be
+      // using a different upload mechanism (probably <input type=file>).
+      console.log(
+        "[EasyFilesChild] no showOpenFilePicker on this window; skipping API override for",
+        win.location?.href
+      );
+      return;
+    }
 
     this._injected = true;
 
@@ -48,6 +71,11 @@ export class EasyFilesChild extends JSWindowActorChild {
       // 'this' here is the content window (exportFunction binds appropriately
       // for unbound function references); we use win from the closure.
       const winRef = win;
+
+      console.log(
+        "[EasyFilesChild] showOpenFilePicker INVOKED in",
+        winRef.location?.href
+      );
 
       return new winRef.Promise((resolve, reject) => {
         if (actor.pendingApi || actor.pendingInput) {
@@ -127,8 +155,7 @@ export class EasyFilesChild extends JSWindowActorChild {
     }
   }
 
-  handleEvent(event) {
-    if (event.type !== "click") return;
+  _handleClick(event) {
 
     // Diagnostic ping. Helps confirm in the Browser Console that the actor is
     // alive and receiving clicks. Distinguishes "script not loaded" from
