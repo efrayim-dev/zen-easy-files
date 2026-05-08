@@ -12,6 +12,16 @@
     "defaultValue": true
   },
   {
+    "type": "dropdown",
+    "property": "extensions.easy-files.popup-position",
+    "label": "Where the picker appears",
+    "defaultValue": "trigger",
+    "options": [
+      { "label": "Right under the upload button I clicked", "value": "trigger" },
+      { "label": "Bottom of the page (centered)", "value": "bottom" }
+    ]
+  },
+  {
     "type": "string",
     "property": "extensions.easy-files.recent-limit",
     "label": "Number of recent files to show (1–50)",

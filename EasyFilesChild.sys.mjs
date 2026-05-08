@@ -242,13 +242,45 @@ export class EasyFilesChild extends JSWindowActorChild {
       capture = target.capture || "";
     } catch {}
 
+    // Capture screen-space rect of the visible clicked element so the chrome
+    // side can anchor the panel right below it. Walk up from event.target to
+    // find the first ancestor with a non-zero bounding rect — file inputs are
+    // often display:none or width:0 and we need a real anchor.
+    const triggerRect = this._computeTriggerRect(event);
+
     this.sendAsyncMessage("EasyFiles:Show", {
       accept,
       multiple,
       capture,
       pageURL: this.contentWindow?.location?.href || "",
       apiMode: "input",
+      triggerRect,
     });
+  }
+
+  _computeTriggerRect(event) {
+    try {
+      const path = event.composedPath ? event.composedPath() : [event.target];
+      const win = this.contentWindow;
+      const screenOriginX = win?.mozInnerScreenX || 0;
+      const screenOriginY = win?.mozInnerScreenY || 0;
+      for (const node of path) {
+        if (!node || typeof node.getBoundingClientRect !== "function") continue;
+        const r = node.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          return {
+            screenX: r.left + screenOriginX,
+            screenY: r.top + screenOriginY,
+            screenBottom: r.bottom + screenOriginY,
+            width: r.width,
+            height: r.height,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn("[EasyFilesChild] computeTriggerRect failed:", e);
+    }
+    return null;
   }
 
   async receiveMessage(message) {

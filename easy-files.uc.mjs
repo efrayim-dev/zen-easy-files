@@ -23,6 +23,7 @@ const PREF_LIMIT = "extensions.easy-files.recent-limit";
 const PREF_BYPASS_KEY = "extensions.easy-files.bypass-modifier";
 const PREF_RECENT_FOLDER = "extensions.easy-files.recent-folder";
 const PREF_RECENT_SOURCE = "extensions.easy-files.recent-source";
+const PREF_POPUP_POSITION = "extensions.easy-files.popup-position";
 
 let _registered = false;
 
@@ -42,6 +43,9 @@ function setupDefaults() {
   safeSet(PREF_BYPASS_KEY, () => branch.setStringPref(PREF_BYPASS_KEY, "shift"));
   safeSet(PREF_RECENT_FOLDER, () => branch.setStringPref(PREF_RECENT_FOLDER, ""));
   safeSet(PREF_RECENT_SOURCE, () => branch.setStringPref(PREF_RECENT_SOURCE, "folder"));
+  safeSet(PREF_POPUP_POSITION, () =>
+    branch.setStringPref(PREF_POPUP_POSITION, "trigger")
+  );
 }
 
 // Try to find a usable system Downloads/Documents/Desktop directory. Returns
@@ -375,34 +379,74 @@ class EasyFilesController {
     this._switchTab("recent");
     this._updateInfo();
 
-    const anchor =
+    this._openPanel(detail);
+    this._loadRecent();
+  }
+
+  _openPanel(detail) {
+    const browser =
       detail.browser ||
-      window.gURLBar?.textbox ||
       window.gBrowser?.selectedBrowser ||
       document.documentElement;
+    const triggerRect = detail.data?.triggerRect;
+    let position;
+    try {
+      position = Services.prefs.getStringPref(PREF_POPUP_POSITION, "trigger");
+    } catch {
+      position = "trigger";
+    }
 
     console.log(
-      "[EasyFiles] opening panel; anchor=",
-      anchor?.tagName || anchor,
-      "panel=",
-      this.panel?.id,
+      "[EasyFiles] opening panel; position=",
+      position,
+      "triggerRect=",
+      triggerRect,
       "panelState(before)=",
       this.panel?.state
     );
+
     try {
-      this.panel.openPopup(anchor, "after_start", 0, 0, false, false);
+      if (position === "trigger" && triggerRect) {
+        // Anchor right under the visible clicked element using screen coords.
+        // Firefox auto-flips the panel above the anchor if there isn't enough
+        // space below the screen.
+        const x = Math.round(triggerRect.screenX);
+        const y = Math.round(triggerRect.screenBottom);
+        this.panel.openPopupAtScreen(x, y, false);
+      } else if (position === "bottom") {
+        // Bottom of the page: align panel's bottom edge to browser's bottom
+        // edge, horizontally centered.
+        this.panel.openPopup(
+          browser,
+          "bottomcenter bottomcenter",
+          0,
+          0,
+          false,
+          false
+        );
+      } else {
+        // Fallback: trigger preferred but no rect (e.g. showOpenFilePicker
+        // API call has no DOM target). Anchor near the top-center of the
+        // browser content.
+        this.panel.openPopup(
+          browser,
+          "topcenter topcenter",
+          0,
+          80,
+          false,
+          false
+        );
+      }
     } catch (e) {
       console.error("[EasyFiles] openPopup threw:", e);
     }
-    // Log panel state on the next tick so we can see if it actually opened
-    // or if XUL closed it immediately.
+
     Promise.resolve().then(() => {
       console.log(
         "[EasyFiles] panel state after openPopup:",
         this.panel?.state
       );
     });
-    this._loadRecent();
   }
 
   _getRecentSource() {
