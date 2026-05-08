@@ -194,7 +194,6 @@ function buildPanel() {
     console.log("[EasyFiles] removed stale panel and rebuilding");
   }
 
-  const ns = "http://www.w3.org/1999/xhtml";
   let panel = document.createXULElement("panel");
   panel.id = PANEL_ID;
   panel.setAttribute("type", "arrow");
@@ -202,9 +201,12 @@ function buildPanel() {
   panel.setAttribute("class", "easy-files-popup");
   panel.setAttribute("orient", "vertical");
 
-  const root = document.createElementNS(ns, "div");
-  root.className = "ef-root";
-  root.innerHTML = `
+  // Parse the template through DOMParser as real HTML and import the tree.
+  // Direct innerHTML on an XHTML div inside browser.xhtml has a quirk where
+  // <button> tags get materialised as XUL buttons, which silently drop
+  // data-* attributes. Going through DOMParser("text/html") forces HTML5
+  // parsing rules and guarantees real HTMLButtonElement nodes.
+  const tpl = `<!DOCTYPE html><html><body><div class="ef-root">
     <div class="ef-header">
       <div class="ef-title">Attach a file</div>
       <button class="ef-close" data-action="close" title="Close (Esc)">✕</button>
@@ -252,7 +254,12 @@ function buildPanel() {
         <button class="ef-action ef-primary hidden" data-action="submit">Attach selected</button>
       </div>
     </div>
-  `;
+  </div></body></html>`;
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(tpl, "text/html");
+  const parsedRoot = doc.body.firstElementChild;
+  const root = document.importNode(parsedRoot, true);
   panel.appendChild(root);
 
   const popupSet =
@@ -260,14 +267,31 @@ function buildPanel() {
   popupSet.appendChild(panel);
 
   const actionBtns = panel.querySelectorAll("[data-action]");
+  const allEls = panel.querySelectorAll("*");
   console.log(
-    "[EasyFiles] buildPanel done; rootChildren=",
+    "[EasyFiles] buildPanel done; totalElements=",
+    allEls.length,
+    "rootChildren=",
     root.children.length,
+    "buttons=",
+    panel.querySelectorAll("button").length,
     "actionButtons=",
     actionBtns.length,
     "submitBtn=",
     !!panel.querySelector('[data-action="submit"]')
   );
+  if (!actionBtns.length) {
+    console.warn(
+      "[EasyFiles] no [data-action] buttons - dumping element tree for diagnosis:",
+      Array.from(allEls).map((el) => ({
+        tag: el.localName,
+        ns: el.namespaceURI,
+        attrs: Array.from(el.attributes)
+          .map((a) => a.name)
+          .join(","),
+      }))
+    );
+  }
   return panel;
 }
 
