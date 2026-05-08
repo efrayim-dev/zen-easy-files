@@ -1,14 +1,41 @@
 [
   {
+    "type": "text",
+    "label": "Easy Files",
+    "size": "20px",
+    "margin": "10px 0 20px 0"
+  },
+  {
+    "type": "checkbox",
     "property": "extensions.easy-files.enabled",
     "label": "Enable Easy Files picker",
-    "type": "checkbox",
     "defaultValue": true
   },
   {
-    "property": "extensions.easy-files.recent-limit",
-    "label": "Number of recent downloads to show (1–50)",
     "type": "string",
+    "property": "extensions.easy-files.recent-limit",
+    "label": "Number of recent files to show (1–50)",
     "defaultValue": "15"
+  },
+  {
+    "type": "separator",
+    "label": "Recent tab",
+    "margin": "12px 0 8px 0"
+  },
+  {
+    "type": "dropdown",
+    "property": "extensions.easy-files.recent-source",
+    "label": "Source for the Recent tab",
+    "defaultValue": "folder",
+    "options": [
+      { "label": "A folder on disk (configurable below)", "value": "folder" },
+      { "label": "Zen's download history", "value": "downloads" }
+    ]
+  },
+  {
+    "type": "string",
+    "property": "extensions.easy-files.recent-folder",
+    "label": "Folder path (leave empty to use your OS Downloads folder). Tip: click the 📁 icon inside the panel to set this with a folder picker.",
+    "defaultValue": ""
   }
 ]

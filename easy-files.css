@@ -131,6 +131,45 @@
   justify-content: flex-end;
 }
 
+#easy-files-panel .ef-folder-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 8px;
+  font-size: 11.5px;
+  color: var(--ef-fg-muted);
+}
+#easy-files-panel .ef-folder-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#easy-files-panel .ef-folder-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+#easy-files-panel .ef-folder-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--ef-radius-sm);
+  border: 1px solid var(--ef-border);
+  background: transparent;
+  color: var(--ef-fg);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  padding: 0;
+}
+#easy-files-panel .ef-folder-btn:hover {
+  background: var(--ef-hover);
+}
+
 #easy-files-panel .ef-list {
   flex: 1;
   overflow-y: auto;

@@ -21,6 +21,8 @@ const STYLE_ID = "easy-files-style";
 const PREF_ENABLED = "extensions.easy-files.enabled";
 const PREF_LIMIT = "extensions.easy-files.recent-limit";
 const PREF_BYPASS_KEY = "extensions.easy-files.bypass-modifier";
+const PREF_RECENT_FOLDER = "extensions.easy-files.recent-folder";
+const PREF_RECENT_SOURCE = "extensions.easy-files.recent-source";
 
 let _registered = false;
 
@@ -32,6 +34,30 @@ function setupDefaults() {
     branch.setIntPref(PREF_LIMIT, 15);
   if (branch.getPrefType(PREF_BYPASS_KEY) === 0)
     branch.setStringPref(PREF_BYPASS_KEY, "shift");
+  if (branch.getPrefType(PREF_RECENT_FOLDER) === 0)
+    branch.setStringPref(PREF_RECENT_FOLDER, "");
+  if (branch.getPrefType(PREF_RECENT_SOURCE) === 0)
+    branch.setStringPref(PREF_RECENT_SOURCE, "folder");
+}
+
+function getDefaultDownloadsPath() {
+  for (const key of ["DfltDwnld", "Downld", "Desk"]) {
+    try {
+      const dir = Services.dirsvc.get(key, Ci.nsIFile);
+      if (dir?.path && dir.exists() && dir.isDirectory()) return dir.path;
+    } catch {}
+  }
+  return "";
+}
+
+function getRecentFolderPath() {
+  let p = "";
+  try {
+    p = Services.prefs.getStringPref(PREF_RECENT_FOLDER, "") || "";
+  } catch {}
+  p = (p || "").trim();
+  if (p) return p;
+  return getDefaultDownloadsPath();
 }
 
 function registerActor() {
@@ -91,8 +117,15 @@ function buildPanel() {
     </div>
     <div class="ef-body">
       <div class="ef-pane" data-pane="recent">
+        <div class="ef-folder-bar">
+          <span class="ef-folder-label" data-info="folder">…</span>
+          <div class="ef-folder-actions">
+            <button class="ef-folder-btn" data-action="toggle-source" title="Toggle between folder scan and download history">⇄</button>
+            <button class="ef-folder-btn" data-action="pick-folder" title="Choose folder">📁</button>
+          </div>
+        </div>
         <div class="ef-list" data-list="recent">
-          <div class="ef-empty">Loading recent downloads…</div>
+          <div class="ef-empty">Loading recent files…</div>
         </div>
       </div>
       <div class="ef-pane hidden" data-pane="clipboard">
@@ -180,17 +213,40 @@ class EasyFilesController {
       document.documentElement;
 
     this.panel.openPopup(anchor, "after_start", 0, 0, false, false);
-    this._loadRecentDownloads();
+    this._loadRecent();
   }
 
-  async _loadRecentDownloads() {
+  _getRecentSource() {
+    try {
+      const v = Services.prefs.getStringPref(PREF_RECENT_SOURCE, "folder");
+      return v === "downloads" ? "downloads" : "folder";
+    } catch {
+      return "folder";
+    }
+  }
+
+  _updateFolderLabel() {
+    const label = this.panel.querySelector('[data-info="folder"]');
+    if (!label) return;
+    const source = this._getRecentSource();
+    if (source === "downloads") {
+      label.textContent = "Source: download history";
+      label.title = "Showing files from Zen's download history";
+    } else {
+      const path = getRecentFolderPath();
+      label.textContent = path
+        ? "📂 " + collapsePath(path)
+        : "(no folder configured)";
+      label.title = path || "Set a folder in Sine settings or click 📁";
+    }
+  }
+
+  async _loadRecent() {
     const list = this.panel.querySelector('[data-list="recent"]');
-    list.innerHTML = '<div class="ef-empty">Loading recent downloads…</div>';
+    list.innerHTML = '<div class="ef-empty">Loading…</div>';
+    this._updateFolderLabel();
 
     try {
-      const downloadList = await Downloads.getList(Downloads.ALL);
-      const downloads = await downloadList.getAll();
-
       const limit = Services.prefs.getIntPref(PREF_LIMIT, 15);
       const accept = (this.requestData?.accept || "").toLowerCase();
       const acceptParts = accept
@@ -198,35 +254,22 @@ class EasyFilesController {
         .map((s) => s.trim())
         .filter(Boolean);
 
-      const valid = [];
-      for (const dl of downloads) {
-        if (!dl.target?.path || !dl.succeeded) continue;
-        try {
-          const file = new FileUtils.File(dl.target.path);
-          if (!file.exists() || !file.isFile()) continue;
-          const name = file.leafName;
-          const mime =
-            dl.contentType && dl.contentType !== "application/octet-stream"
-              ? dl.contentType
-              : guessMimeType(name);
-          if (acceptParts.length && !acceptMatches(name, mime, acceptParts))
-            continue;
-          valid.push({
-            path: dl.target.path,
-            name,
-            size: file.fileSize,
-            mtime: file.lastModifiedTime,
-            mime,
-          });
-        } catch {}
-      }
-      valid.sort((a, b) => b.mtime - a.mtime);
-      const top = valid.slice(0, limit);
+      const items =
+        this._getRecentSource() === "downloads"
+          ? await this._collectFromDownloadHistory(acceptParts)
+          : await this._collectFromFolder(acceptParts);
+
+      items.sort((a, b) => b.mtime - a.mtime);
+      const top = items.slice(0, limit);
       this.recentDownloads = top;
 
       if (!top.length) {
-        list.innerHTML =
-          '<div class="ef-empty">No matching recent downloads.</div>';
+        const source = this._getRecentSource();
+        const reason =
+          source === "downloads"
+            ? "No matching items in download history."
+            : "No matching files in this folder.";
+        list.innerHTML = `<div class="ef-empty">${reason}</div>`;
         return;
       }
 
@@ -235,11 +278,104 @@ class EasyFilesController {
         list.appendChild(this._makeRow(item));
       }
     } catch (e) {
-      console.error("EasyFiles: load recent downloads failed", e);
+      console.error("EasyFiles: load recent failed", e);
       list.innerHTML = `<div class="ef-empty">Error: ${escapeHtml(
         String(e.message || e)
       )}</div>`;
     }
+  }
+
+  async _collectFromDownloadHistory(acceptParts) {
+    const downloadList = await Downloads.getList(Downloads.ALL);
+    const downloads = await downloadList.getAll();
+    const out = [];
+    for (const dl of downloads) {
+      if (!dl.target?.path || !dl.succeeded) continue;
+      try {
+        const file = new FileUtils.File(dl.target.path);
+        if (!file.exists() || !file.isFile()) continue;
+        const name = file.leafName;
+        const mime =
+          dl.contentType && dl.contentType !== "application/octet-stream"
+            ? dl.contentType
+            : guessMimeType(name);
+        if (acceptParts.length && !acceptMatches(name, mime, acceptParts))
+          continue;
+        out.push({
+          path: dl.target.path,
+          name,
+          size: file.fileSize,
+          mtime: file.lastModifiedTime,
+          mime,
+        });
+      } catch {}
+    }
+    return out;
+  }
+
+  async _collectFromFolder(acceptParts) {
+    const folder = getRecentFolderPath();
+    if (!folder) return [];
+    let entries;
+    try {
+      entries = await IOUtils.getChildren(folder);
+    } catch (e) {
+      console.warn("EasyFiles: getChildren failed for", folder, e);
+      return [];
+    }
+    const out = [];
+    for (const path of entries) {
+      try {
+        const stat = await IOUtils.stat(path);
+        if (stat.type !== "regular") continue;
+        const name = path.split(/[\\/]/).pop();
+        const mime = guessMimeType(name);
+        if (acceptParts.length && !acceptMatches(name, mime, acceptParts))
+          continue;
+        out.push({
+          path,
+          name,
+          size: stat.size,
+          mtime: stat.lastModified,
+          mime,
+        });
+      } catch {}
+    }
+    return out;
+  }
+
+  async _pickFolder() {
+    try {
+      const fp = Cc["@mozilla.org/filepicker;1"].createInstance(
+        Ci.nsIFilePicker
+      );
+      fp.init(
+        window.browsingContext,
+        "Choose folder for Recent files",
+        Ci.nsIFilePicker.modeGetFolder
+      );
+      const current = getRecentFolderPath();
+      if (current) {
+        try {
+          fp.displayDirectory = new FileUtils.File(current);
+        } catch {}
+      }
+      const result = await new Promise((resolve) => fp.open(resolve));
+      if (result === Ci.nsIFilePicker.returnOK && fp.file?.path) {
+        Services.prefs.setStringPref(PREF_RECENT_FOLDER, fp.file.path);
+        Services.prefs.setStringPref(PREF_RECENT_SOURCE, "folder");
+        this._loadRecent();
+      }
+    } catch (e) {
+      console.error("EasyFiles: pickFolder failed", e);
+    }
+  }
+
+  _toggleSource() {
+    const next =
+      this._getRecentSource() === "folder" ? "downloads" : "folder";
+    Services.prefs.setStringPref(PREF_RECENT_SOURCE, next);
+    this._loadRecent();
   }
 
   _makeRow(item) {
@@ -555,6 +691,12 @@ class EasyFilesController {
       case "take-screenshot":
         this._takeScreenshot();
         break;
+      case "pick-folder":
+        this._pickFolder();
+        break;
+      case "toggle-source":
+        this._toggleSource();
+        break;
     }
   }
 
@@ -701,6 +843,12 @@ function escapeHtml(s) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function collapsePath(p) {
+  const parts = p.replace(/\\/g, "/").split("/");
+  if (parts.length <= 3) return p;
+  return parts.slice(0, 1).concat("…", parts.slice(-2)).join("/");
 }
 
 function init() {
