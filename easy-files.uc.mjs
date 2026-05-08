@@ -28,16 +28,20 @@ let _registered = false;
 
 function setupDefaults() {
   const branch = Services.prefs.getDefaultBranch("");
-  if (branch.getPrefType(PREF_ENABLED) === 0)
-    branch.setBoolPref(PREF_ENABLED, true);
-  if (branch.getPrefType(PREF_LIMIT) === 0)
-    branch.setIntPref(PREF_LIMIT, 15);
-  if (branch.getPrefType(PREF_BYPASS_KEY) === 0)
-    branch.setStringPref(PREF_BYPASS_KEY, "shift");
-  if (branch.getPrefType(PREF_RECENT_FOLDER) === 0)
-    branch.setStringPref(PREF_RECENT_FOLDER, "");
-  if (branch.getPrefType(PREF_RECENT_SOURCE) === 0)
-    branch.setStringPref(PREF_RECENT_SOURCE, "folder");
+  const safeSet = (name, fn) => {
+    try {
+      if (branch.getPrefType(name) === 0) fn();
+    } catch (e) {
+      console.warn("[EasyFiles] setupDefaults skipped", name, e);
+    }
+  };
+  safeSet(PREF_ENABLED, () => branch.setBoolPref(PREF_ENABLED, true));
+  // PREF_LIMIT: Sine preferences.json declares it as a string field, so we
+  // store the default as a string too. getLimitPref() reads either type.
+  safeSet(PREF_LIMIT, () => branch.setStringPref(PREF_LIMIT, "15"));
+  safeSet(PREF_BYPASS_KEY, () => branch.setStringPref(PREF_BYPASS_KEY, "shift"));
+  safeSet(PREF_RECENT_FOLDER, () => branch.setStringPref(PREF_RECENT_FOLDER, ""));
+  safeSet(PREF_RECENT_SOURCE, () => branch.setStringPref(PREF_RECENT_SOURCE, "folder"));
 }
 
 function getDefaultDownloadsPath() {
@@ -58,6 +62,25 @@ function getRecentFolderPath() {
   p = (p || "").trim();
   if (p) return p;
   return getDefaultDownloadsPath();
+}
+
+// Sine's preferences UI stores numeric inputs as STRING prefs (since
+// `"type": "string"` in preferences.json), but our code wants an integer.
+// Calling getIntPref on a string-type pref throws NS_ERROR_UNEXPECTED, which
+// would silently kill _loadRecent. Read it tolerantly.
+function getLimitPref(fallback = 15) {
+  try {
+    const t = Services.prefs.getPrefType(PREF_LIMIT);
+    if (t === Services.prefs.PREF_INT) {
+      return Services.prefs.getIntPref(PREF_LIMIT, fallback);
+    }
+    if (t === Services.prefs.PREF_STRING) {
+      const raw = Services.prefs.getStringPref(PREF_LIMIT, "");
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && n > 0) return Math.min(n, 200);
+    }
+  } catch {}
+  return fallback;
 }
 
 function registerActor() {
@@ -247,7 +270,7 @@ class EasyFilesController {
     this._updateFolderLabel();
 
     try {
-      const limit = Services.prefs.getIntPref(PREF_LIMIT, 15);
+      const limit = getLimitPref(15);
       const accept = (this.requestData?.accept || "").toLowerCase();
       const acceptParts = accept
         .split(",")
