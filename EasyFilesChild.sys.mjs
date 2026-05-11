@@ -21,6 +21,7 @@ export class EasyFilesChild extends JSWindowActorChild {
   pendingApi = null; // { resolve, reject, originalFn, win, multiple }
   _bypassNext = false;
   _injected = false;
+  _showPickerInjected = false;
 
   actorCreated() {
     console.log(
@@ -28,13 +29,15 @@ export class EasyFilesChild extends JSWindowActorChild {
       this.contentWindow?.location?.href
     );
     this._injectAPIOverride();
+    this._injectShowPickerOverride();
   }
 
-  // Re-attempt the override on early lifecycle events so we win the race
+  // Re-attempt the overrides on early lifecycle events so we win the race
   // against page scripts that snapshot native references at module load.
   handleEvent(event) {
     if (event.type === "DOMDocElementInserted" || event.type === "pageshow") {
       this._injectAPIOverride();
+      this._injectShowPickerOverride();
       return;
     }
     if (event.type === "click") {
@@ -152,6 +155,126 @@ export class EasyFilesChild extends JSWindowActorChild {
     } catch (e) {
       console.error("[EasyFilesChild] exportFunction failed", e);
       this._injected = false;
+    }
+  }
+
+  // Override HTMLInputElement.prototype.showPicker for <input type="file">.
+  // showPicker() opens the OS file dialog WITHOUT dispatching a click event,
+  // so our click-listener path never sees it. Google Sheets' Drive Picker
+  // calls input.showPicker() on a programmatically-created file input — that's
+  // why clicking "Browse" in Sheets jumps straight to Windows Explorer with
+  // no preceding [EasyFilesChild] file-input-click log.
+  _injectShowPickerOverride() {
+    if (this._showPickerInjected) return;
+    const win = this.contentWindow;
+    if (!win) return;
+    const InputCtor = win.HTMLInputElement;
+    const proto = InputCtor?.prototype;
+    if (!proto || typeof proto.showPicker !== "function") {
+      console.log(
+        "[EasyFilesChild] no HTMLInputElement.showPicker on this window; skipping override for",
+        win.location?.href
+      );
+      return;
+    }
+
+    this._showPickerInjected = true;
+
+    const origShowPicker = proto.showPicker;
+    const actor = this;
+
+    const wrapped = function () {
+      // 'this' is the content-side <input> element calling showPicker().
+      const input = this;
+      let type = "";
+      try {
+        type = input?.type || "";
+      } catch {}
+
+      console.log(
+        "[EasyFilesChild] showPicker INVOKED on",
+        input?.tagName,
+        "type=" + type,
+        "url=" + (win.location?.href || "?")
+      );
+
+      // For non-file inputs (date, time, color, etc.) showPicker is harmless;
+      // pass straight through to the real implementation.
+      if (type !== "file") {
+        return origShowPicker.apply(input, arguments);
+      }
+
+      // Bypass mode: user opted into the native picker (Shift-click escape
+      // hatch in our click handler sets this flag).
+      if (actor._bypassNext) {
+        actor._bypassNext = false;
+        return origShowPicker.apply(input, arguments);
+      }
+
+      if (actor.pendingApi || actor.pendingInput) {
+        throw new win.DOMException(
+          "Picker is already open.",
+          "InvalidStateError"
+        );
+      }
+
+      actor.pendingInput = input;
+      actor.pendingLabel = null;
+
+      let accept = "";
+      let multiple = false;
+      let capture = "";
+      try {
+        accept = input.accept || "";
+        multiple = !!input.multiple;
+        capture = input.capture || "";
+      } catch {}
+
+      // No event = no triggerRect. Panel will fall back to top-center anchor.
+      try {
+        actor.sendAsyncMessage("EasyFiles:Show", {
+          accept,
+          multiple,
+          capture,
+          pageURL: win.location?.href || "",
+          apiMode: "showPicker",
+          triggerRect: null,
+        });
+      } catch (e) {
+        actor.pendingInput = null;
+        console.error(
+          "[EasyFilesChild] showPicker -> EasyFiles:Show send failed; falling back to native",
+          e
+        );
+        actor._bypassNext = true;
+        return origShowPicker.apply(input, arguments);
+      }
+    };
+
+    try {
+      Cu.exportFunction(wrapped, proto, { defineAs: "showPicker" });
+      console.log(
+        "[EasyFilesChild] HTMLInputElement.showPicker override installed for",
+        win.location?.href
+      );
+    } catch (e) {
+      // Some prototypes don't accept exportFunction's defineAs target. Fall
+      // back to waiveXrays + direct assignment.
+      try {
+        const exported = Cu.exportFunction(wrapped, win);
+        Cu.waiveXrays(proto).showPicker = exported;
+        console.log(
+          "[EasyFilesChild] HTMLInputElement.showPicker override installed (waiveXrays path) for",
+          win.location?.href
+        );
+      } catch (e2) {
+        console.error(
+          "[EasyFilesChild] showPicker override install failed via both paths",
+          e,
+          e2
+        );
+        this._showPickerInjected = false;
+      }
     }
   }
 
