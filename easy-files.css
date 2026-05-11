@@ -197,6 +197,36 @@
   border-radius: var(--ef-radius-sm);
 }
 
+#easy-files-panel .ef-show-all-row {
+  margin: 6px 2px 2px;
+  padding: 9px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--ef-radius-sm);
+  border: 1px dashed var(--ef-border);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.08s ease, border-color 0.08s ease, color 0.08s ease;
+}
+#easy-files-panel .ef-show-all-row:hover {
+  background: var(--ef-hover);
+  border-color: var(--ef-fg-muted);
+}
+#easy-files-panel .ef-show-all-row:focus-visible {
+  outline: 2px solid var(--ef-accent);
+  outline-offset: -2px;
+}
+#easy-files-panel .ef-show-all-label {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ef-fg-muted);
+  text-align: center;
+}
+#easy-files-panel .ef-show-all-row:hover .ef-show-all-label {
+  color: var(--ef-fg);
+}
+
 #easy-files-panel .ef-item {
   display: grid;
   grid-template-columns: 36px 1fr auto;

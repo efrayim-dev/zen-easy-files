@@ -320,6 +320,11 @@ class EasyFilesController {
     this.selectedFiles = [];
     this.recentDownloads = [];
     this._submitted = false;
+    // When a site sends an `accept` filter (e.g., Imgur "image/*", Sheets "text/csv,…")
+    // we default to showing only matching files. Clicking "Show all" in the
+    // panel flips this for the current panel session. Reset to false on each
+    // open so the next picker invocation starts back in filtered mode.
+    this.showAllRecent = false;
   }
 
   init() {
@@ -387,6 +392,7 @@ class EasyFilesController {
     this.requestData = detail.data || {};
     this.selectedFiles = [];
     this._submitted = false;
+    this.showAllRecent = false;
 
     this._switchTab("recent");
     this._updateInfo();
@@ -546,41 +552,105 @@ class EasyFilesController {
       const items = scan.items;
       items.sort((a, b) => b.mtime - a.mtime);
 
-      // ALWAYS show the latest N recent files regardless of the page's accept
-      // filter. Sheets sends a strict spreadsheet-only mime list; Imgur sends a
-      // wide image/video list. We want both panels to look the same — same set
-      // of recently-downloaded files. We just visually dim items that don't
-      // match the site's filter so the user knows the site might reject them.
-      const display = items.slice(0, limit);
-      this.recentDownloads = display;
+      list.innerHTML = "";
 
-      if (!display.length) {
-        list.innerHTML = "";
-        list.appendChild(this._buildEmptyMessage(scan));
+      // No accept filter: just render the most recent N items, no toggle UI
+      // needed. The whole site wants any file — everything matches.
+      if (!acceptParts.length) {
+        const display = items.slice(0, limit);
+        this.recentDownloads = display;
+        if (!display.length) {
+          list.appendChild(this._buildEmptyMessage(scan));
+          return;
+        }
+        for (const item of display) {
+          list.appendChild(this._makeRow(item, true));
+        }
         return;
       }
 
-      list.innerHTML = "";
-      const nonMatchInDisplay = acceptParts.length
-        ? display.filter((it) => !acceptMatches(it.name, it.mime, acceptParts))
-            .length
-        : 0;
-      if (acceptParts.length && nonMatchInDisplay === display.length) {
+      // Accept filter present. Split items into matches/non-matches BEFORE
+      // slicing so the user always sees up to `limit` files that the site
+      // will actually accept (rather than burning slots on dimmed misses).
+      const matching = [];
+      const nonMatching = [];
+      for (const it of items) {
+        if (acceptMatches(it.name, it.mime, acceptParts)) {
+          matching.push(it);
+        } else {
+          nonMatching.push(it);
+        }
+      }
+
+      // Show-all mode (toggled by the user via "Show all"): render matches
+      // first, then dimmed non-matches, both capped at `limit` combined.
+      if (this.showAllRecent) {
+        const merged = matching.concat(nonMatching).slice(0, limit);
+        this.recentDownloads = merged;
+        if (!merged.length) {
+          list.appendChild(this._buildEmptyMessage(scan));
+          return;
+        }
+        for (const it of merged) {
+          list.appendChild(
+            this._makeRow(it, acceptMatches(it.name, it.mime, acceptParts))
+          );
+        }
+        list.appendChild(
+          this._buildShowAllToggleRow({
+            mode: "showLess",
+            acceptedCount: matching.length,
+            hiddenCount: 0,
+            accept,
+          })
+        );
+        return;
+      }
+
+      // Default mode: only show matches.
+      const display = matching.slice(0, limit);
+      this.recentDownloads = display;
+
+      if (!display.length) {
+        // No matching recent files. Show a clear explanation, then offer to
+        // expand to the unfiltered list so the user can override.
         const note = document.createElementNS(
           "http://www.w3.org/1999/xhtml",
           "div"
         );
         note.className = "ef-note";
-        note.textContent = `This site only accepts: ${escapeHtml(
+        note.textContent = `No recent files match what this site accepts (${escapeHtml(
           accept
-        )}. Pick a matching file or "Browse files…" for the system picker.`;
+        )}).`;
         list.appendChild(note);
+        if (nonMatching.length) {
+          list.appendChild(
+            this._buildShowAllToggleRow({
+              mode: "showAll",
+              acceptedCount: 0,
+              hiddenCount: nonMatching.length,
+              accept,
+            })
+          );
+        } else {
+          list.appendChild(this._buildEmptyMessage(scan));
+        }
+        return;
       }
+
       for (const item of display) {
-        const matches = !acceptParts.length
-          ? true
-          : acceptMatches(item.name, item.mime, acceptParts);
-        list.appendChild(this._makeRow(item, matches));
+        list.appendChild(this._makeRow(item, true));
+      }
+
+      if (nonMatching.length) {
+        list.appendChild(
+          this._buildShowAllToggleRow({
+            mode: "showAll",
+            acceptedCount: matching.length,
+            hiddenCount: nonMatching.length,
+            accept,
+          })
+        );
       }
     } catch (e) {
       console.error("[EasyFiles] load recent failed", e);
@@ -588,6 +658,41 @@ class EasyFilesController {
         String(e.message || e)
       )}</div>`;
     }
+  }
+
+  // Footer row that toggles between filtered ("Show all N hidden") and
+  // unfiltered ("Show only matching") views. Lives inline in the recent list
+  // so it's contextually obvious — no separate settings menu to discover.
+  _buildShowAllToggleRow({ mode, hiddenCount }) {
+    const ns = "http://www.w3.org/1999/xhtml";
+    const row = document.createElementNS(ns, "div");
+    row.className = "ef-show-all-row";
+    row.setAttribute("role", "button");
+    row.setAttribute("tabindex", "0");
+
+    const label = document.createElementNS(ns, "span");
+    label.className = "ef-show-all-label";
+    if (mode === "showAll") {
+      label.textContent = `Show ${hiddenCount} more recent file${
+        hiddenCount === 1 ? "" : "s"
+      } (this site says it doesn't accept them)`;
+    } else {
+      label.textContent = "Show only files this site accepts";
+    }
+    row.appendChild(label);
+
+    // Listener attached directly because this row is built dynamically per
+    // _loadRecent() call, after init()'s [data-action] delegation already ran.
+    const trigger = () => this._handleAction("toggle-show-all");
+    row.addEventListener("click", trigger);
+    row.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        trigger();
+      }
+    });
+
+    return row;
   }
 
   // Render an actionable empty state. Tells the user exactly which folder
@@ -1116,6 +1221,10 @@ class EasyFilesController {
       case "refresh-recent":
         this._loadRecent();
         break;
+      case "toggle-show-all":
+        this.showAllRecent = !this.showAllRecent;
+        this._loadRecent();
+        break;
     }
   }
 
@@ -1192,6 +1301,7 @@ class EasyFilesController {
     this.activeWindowGlobal = null;
     this.selectedFiles = [];
     this._submitted = false;
+    this.showAllRecent = false;
   }
 }
 
