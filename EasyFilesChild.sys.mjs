@@ -1,6 +1,6 @@
 // Content-process side of the EasyFiles JSWindowActor.
 //
-// Two interception paths:
+// Four interception paths, in increasing order of "weirdness":
 //
 // 1. Click interception on <input type="file"> AND on <label> elements that
 //    are associated (via `for=` or by containment) with a file input. Catching
@@ -11,9 +11,20 @@
 //    we must cancel that one.
 //
 // 2. Override of `window.showOpenFilePicker` (File System Access API). Modern
-//    upload UIs like Google Drive Picker, Sheets/Docs uploaders, and many SPAs
-//    invoke `showOpenFilePicker` directly instead of clicking a hidden file
-//    input — those flows never go through path 1.
+//    upload UIs that opt into FSA invoke this directly instead of clicking a
+//    hidden file input — those flows never go through path 1.
+//
+// 3. Override of `HTMLInputElement.prototype.showPicker` (HTML 2022 spec
+//    addition). Opens the OS file dialog from a file input WITHOUT firing a
+//    click event, so path 1 silently misses it.
+//
+// 4. Override of `HTMLInputElement.prototype.click` for type=file inputs.
+//    Last-resort intercept: any code path that ends up at this prototype
+//    method — including programmatic `input.click()` calls whose dispatched
+//    DOM events somehow miss our document-level listener (closed shadow DOM,
+//    sub-iframe whose actor isn't yet instantiated, etc.) — gets routed
+//    through our panel. Google Drive Picker / Sheets Import bypass paths
+//    1–3, so 4 is the safety net.
 
 export class EasyFilesChild extends JSWindowActorChild {
   pendingInput = null;
@@ -22,14 +33,23 @@ export class EasyFilesChild extends JSWindowActorChild {
   _bypassNext = false;
   _injected = false;
   _showPickerInjected = false;
+  _clickInjected = false;
 
   actorCreated() {
+    const url = this.contentWindow?.location?.href || "(no url)";
+    console.log("[EasyFilesChild] actor created in", url);
+    const r1 = this._injectAPIOverride();
+    const r2 = this._injectShowPickerOverride();
+    const r3 = this._injectInputClickOverride();
+    // Single consolidated diagnostic line so console clear-then-click still
+    // shows installs alongside the clicks (assuming clear-after-load).
     console.log(
-      "[EasyFilesChild] actor created in",
-      this.contentWindow?.location?.href
+      "[EasyFilesChild] override status @actorCreated:",
+      "showOpenFilePicker=" + r1,
+      "showPicker=" + r2,
+      "input.click=" + r3,
+      "url=" + url
     );
-    this._injectAPIOverride();
-    this._injectShowPickerOverride();
   }
 
   // Re-attempt the overrides on early lifecycle events so we win the race
@@ -38,6 +58,7 @@ export class EasyFilesChild extends JSWindowActorChild {
     if (event.type === "DOMDocElementInserted" || event.type === "pageshow") {
       this._injectAPIOverride();
       this._injectShowPickerOverride();
+      this._injectInputClickOverride();
       return;
     }
     if (event.type === "click") {
@@ -49,20 +70,17 @@ export class EasyFilesChild extends JSWindowActorChild {
   // Replace window.showOpenFilePicker with a chrome-side wrapper that routes
   // through the EasyFiles panel. We do this in actorCreated() so the override
   // is in place before any page script captures a reference to the original.
+  // Returns one of: "installed" | "already" | "no-api" | "no-window" | "failed".
   _injectAPIOverride() {
-    if (this._injected) return;
+    if (this._injected) return "already";
     const win = this.contentWindow;
-    if (!win) return;
+    if (!win) return "no-window";
     if (typeof win.showOpenFilePicker !== "function") {
       // Iframes need permissions-policy: allow="cross-origin-isolated; ..."
       // for File System Access API. If the picker iframe doesn't have it,
       // showOpenFilePicker simply isn't on the window — the page must be
       // using a different upload mechanism (probably <input type=file>).
-      console.log(
-        "[EasyFilesChild] no showOpenFilePicker on this window; skipping API override for",
-        win.location?.href
-      );
-      return;
+      return "no-api";
     }
 
     this._injected = true;
@@ -148,13 +166,11 @@ export class EasyFilesChild extends JSWindowActorChild {
 
     try {
       Cu.exportFunction(wrapped, win, { defineAs: "showOpenFilePicker" });
-      console.log(
-        "[EasyFilesChild] showOpenFilePicker override installed for",
-        win.location?.href
-      );
+      return "installed";
     } catch (e) {
-      console.error("[EasyFilesChild] exportFunction failed", e);
+      console.error("[EasyFilesChild] showOpenFilePicker exportFunction failed", e);
       this._injected = false;
+      return "failed";
     }
   }
 
@@ -164,18 +180,15 @@ export class EasyFilesChild extends JSWindowActorChild {
   // calls input.showPicker() on a programmatically-created file input — that's
   // why clicking "Browse" in Sheets jumps straight to Windows Explorer with
   // no preceding [EasyFilesChild] file-input-click log.
+  // Returns one of: "installed" | "already" | "no-api" | "no-window" | "failed".
   _injectShowPickerOverride() {
-    if (this._showPickerInjected) return;
+    if (this._showPickerInjected) return "already";
     const win = this.contentWindow;
-    if (!win) return;
+    if (!win) return "no-window";
     const InputCtor = win.HTMLInputElement;
     const proto = InputCtor?.prototype;
     if (!proto || typeof proto.showPicker !== "function") {
-      console.log(
-        "[EasyFilesChild] no HTMLInputElement.showPicker on this window; skipping override for",
-        win.location?.href
-      );
-      return;
+      return "no-api";
     }
 
     this._showPickerInjected = true;
@@ -253,20 +266,14 @@ export class EasyFilesChild extends JSWindowActorChild {
 
     try {
       Cu.exportFunction(wrapped, proto, { defineAs: "showPicker" });
-      console.log(
-        "[EasyFilesChild] HTMLInputElement.showPicker override installed for",
-        win.location?.href
-      );
+      return "installed";
     } catch (e) {
       // Some prototypes don't accept exportFunction's defineAs target. Fall
       // back to waiveXrays + direct assignment.
       try {
         const exported = Cu.exportFunction(wrapped, win);
         Cu.waiveXrays(proto).showPicker = exported;
-        console.log(
-          "[EasyFilesChild] HTMLInputElement.showPicker override installed (waiveXrays path) for",
-          win.location?.href
-        );
+        return "installed-waiveXrays";
       } catch (e2) {
         console.error(
           "[EasyFilesChild] showPicker override install failed via both paths",
@@ -274,6 +281,123 @@ export class EasyFilesChild extends JSWindowActorChild {
           e2
         );
         this._showPickerInjected = false;
+        return "failed";
+      }
+    }
+  }
+
+  // Override HTMLInputElement.prototype.click() for <input type="file">.
+  //
+  // WHY: clicking <input type="file">.click() programmatically *normally*
+  // dispatches a click DOM event we'd catch via our document-level click
+  // listener. But some sites (notably Google Drive Picker / Sheets Import)
+  // open the OS file dialog WITHOUT producing a click event our actor sees:
+  //  - The input may live in a closed shadow DOM whose root we miss
+  //  - The input may be in a sub-iframe our actor hasn't been instantiated in
+  //  - Internal optimisations skip event dispatch when the page invokes
+  //    HTMLInputElement.prototype.click directly
+  //
+  // Hooking the prototype method itself is the airtight intercept: every call
+  // route — page script, framework wrappers, copies of the original — has to
+  // go through the prototype lookup, so our wrapper runs even when no DOM
+  // click event is fired.
+  //
+  // Returns one of: "installed" | "already" | "no-window" | "failed".
+  _injectInputClickOverride() {
+    if (this._clickInjected) return "already";
+    const win = this.contentWindow;
+    if (!win) return "no-window";
+    const InputCtor = win.HTMLInputElement;
+    const proto = InputCtor?.prototype;
+    if (!proto || typeof proto.click !== "function") return "no-api";
+
+    this._clickInjected = true;
+
+    const origClick = proto.click;
+    const actor = this;
+
+    const wrapped = function () {
+      const input = this;
+      let type = "";
+      try {
+        type = input?.type || "";
+      } catch {}
+
+      // Only divert file inputs. Every <button>, <a>, <div>, etc. inherits
+      // .click() through Element.prototype, but we narrowed the override to
+      // HTMLInputElement.prototype so non-INPUTs aren't affected. Among
+      // inputs, only type=file should reroute.
+      if (type !== "file") {
+        return origClick.apply(input, arguments);
+      }
+
+      console.log(
+        "[EasyFilesChild] input.click() INVOKED on file input",
+        "url=" + (win.location?.href || "?"),
+        "isConnected=" + (input?.isConnected ?? "?")
+      );
+
+      if (actor._bypassNext) {
+        actor._bypassNext = false;
+        return origClick.apply(input, arguments);
+      }
+
+      // Panel already showing (e.g., a LABEL click just armed pendingInput
+      // and the browser is now firing the synthetic input.click() that
+      // browsers do internally for label->control). Don't open the native
+      // picker on top of our panel — just no-op. Spec for HTMLElement.click
+      // returns void so dropping the call is invisible to the caller.
+      if (actor.pendingApi || actor.pendingInput) {
+        return;
+      }
+
+      actor.pendingInput = input;
+      actor.pendingLabel = null;
+
+      let accept = "";
+      let multiple = false;
+      let capture = "";
+      try {
+        accept = input.accept || "";
+        multiple = !!input.multiple;
+        capture = input.capture || "";
+      } catch {}
+
+      try {
+        actor.sendAsyncMessage("EasyFiles:Show", {
+          accept,
+          multiple,
+          capture,
+          pageURL: win.location?.href || "",
+          apiMode: "input.click",
+          triggerRect: null,
+        });
+      } catch (e) {
+        actor.pendingInput = null;
+        console.error(
+          "[EasyFilesChild] input.click -> EasyFiles:Show send failed; falling back to native",
+          e
+        );
+        return origClick.apply(input, arguments);
+      }
+    };
+
+    try {
+      Cu.exportFunction(wrapped, proto, { defineAs: "click" });
+      return "installed";
+    } catch (e) {
+      try {
+        const exported = Cu.exportFunction(wrapped, win);
+        Cu.waiveXrays(proto).click = exported;
+        return "installed-waiveXrays";
+      } catch (e2) {
+        console.error(
+          "[EasyFilesChild] input.click override install failed via both paths",
+          e,
+          e2
+        );
+        this._clickInjected = false;
+        return "failed";
       }
     }
   }

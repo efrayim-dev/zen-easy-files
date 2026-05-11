@@ -1,0 +1,10 @@
+v1.4.7: add HTMLInputElement.prototype.click() override + consolidated install diagnostics
+
+Path 4: hook input.click() at the prototype layer to catch programmatic clicks
+that bypass our document-level click listener. Targets Google Drive Picker /
+Sheets Import, which open the OS file dialog without firing showPicker(),
+showOpenFilePicker(), or any click DOM event we observe.
+
+actorCreated now emits one consolidated line listing the install status of
+all three prototype overrides plus the URL, so a console-clear-then-click
+trace still has install info to correlate against subsequent invocations.
