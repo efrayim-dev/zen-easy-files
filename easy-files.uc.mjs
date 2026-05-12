@@ -216,6 +216,21 @@ function buildPanel() {
   panel.setAttribute("noautofocus", "false");
   panel.setAttribute("class", "easy-files-popup");
   panel.setAttribute("orient", "vertical");
+  // Default panel behavior auto-hides on focus loss / popup-hierarchy
+  // changes. Some sites (notably company ERPs that show their own
+  // clipboard-image preview overlay alongside the file input) open a
+  // sibling popup or move focus immediately after the click that opened
+  // us — that triggers autohide and the panel disappears the same frame
+  // it opened. With noautohide=true we stay open until the user picks
+  // files, presses Esc, clicks the X, or clicks the trigger again.
+  panel.setAttribute("noautohide", "true");
+  // Allow clicks that happen outside the panel to still reach the
+  // underlying chrome/page (so the user can interact normally with the
+  // browser without our panel swallowing input). They just won't close
+  // the panel automatically — that is intentional.
+  panel.setAttribute("consumeoutsideclicks", "false");
+  // level=top keeps us above the site's own popups when both are visible.
+  panel.setAttribute("level", "top");
 
   // Parse the template through DOMParser as real HTML and import the tree.
   // Direct innerHTML on an XHTML div inside browser.xhtml has a quirk where
@@ -329,10 +344,52 @@ class EasyFilesController {
 
   init() {
     this.panel = buildPanel();
+    // Diagnostic logging: when the panel closes against our intent (e.g.
+    // a focus-driven autohide despite noautohide=true) the only signal
+    // we get is the popuphiding / popuphidden pair. Logging timing +
+    // origin event lets us correlate panel death to whatever the page
+    // did right before. Cheap to leave on; fires at most twice per open.
+    this.panel.addEventListener("popupshown", () => {
+      this._lastShownAt = Date.now();
+      console.log("[EasyFiles] popupshown at", this._lastShownAt);
+    });
+    this.panel.addEventListener("popuphiding", (e) => {
+      const dt = this._lastShownAt
+        ? Date.now() - this._lastShownAt
+        : "n/a";
+      console.log(
+        "[EasyFiles] popuphiding (closing)",
+        "msSinceShown=" + dt,
+        "submitted=" + this._submitted,
+        "originalTarget=",
+        e.originalTarget?.id || e.originalTarget?.nodeName
+      );
+    });
     this.panel.addEventListener("popuphidden", () => this._onHidden());
     this.panel.addEventListener("keydown", (e) => {
       if (e.key === "Escape") this.panel.hidePopup();
     });
+
+    // With noautohide=true the platform won't dismiss us when the user
+    // clicks elsewhere. Reproduce that affordance manually so users can
+    // still click anywhere to cancel — but only on chrome-side mousedowns
+    // (browser UI) and only when our panel is currently open. Content
+    // clicks live in another process and we deliberately don't try to
+    // catch them here; selecting a file or pressing Esc is the in-content
+    // dismissal path.
+    const onChromeMouseDown = (e) => {
+      if (!this.panel || this.panel.state !== "open") return;
+      if (this.panel.contains(e.target)) return;
+      console.log(
+        "[EasyFiles] chrome mousedown outside panel; dismissing",
+        e.target?.id || e.target?.nodeName
+      );
+      try {
+        this.panel.hidePopup();
+      } catch {}
+    };
+    document.addEventListener("mousedown", onChromeMouseDown, true);
+    this._onChromeMouseDown = onChromeMouseDown;
 
     this.panel.querySelectorAll("[data-tab]").forEach((btn) => {
       btn.addEventListener("click", (e) =>
@@ -374,6 +431,16 @@ class EasyFilesController {
     // The window-level dispatcher (window._easyFilesPickerListener) is
     // managed by init() across reloads, so we don't touch it here. We just
     // null out our panel reference so any in-flight async handlers no-op.
+    if (this._onChromeMouseDown) {
+      try {
+        document.removeEventListener(
+          "mousedown",
+          this._onChromeMouseDown,
+          true
+        );
+      } catch {}
+      this._onChromeMouseDown = null;
+    }
     this.panel = null;
     console.log("[EasyFiles] previous controller destroyed");
   }
