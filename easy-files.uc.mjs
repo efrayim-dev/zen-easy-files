@@ -27,6 +27,162 @@ const PREF_POPUP_POSITION = "extensions.easy-files.popup-position";
 
 let _registered = false;
 
+// nsIFilePicker factory suppressor state. Installed once per browser session
+// (module-level, not per-controller) so script reloads don't double-register.
+// While our panel is the active picker for a file input, this wrapper returns
+// a no-op nsIFilePicker so Zen's chrome-side clipboard helper / native dialog
+// path can't open on top of us. Outside that window the wrapper delegates to
+// the original factory verbatim so Save As, attach in mail, etc. all work.
+let _filePickerSuppressorInstalled = false;
+let _filePickerOriginalFactory = null;
+let _filePickerCID = null;
+const FILE_PICKER_CONTRACT_ID = "@mozilla.org/filepicker;1";
+
+function installFilePickerSuppressor() {
+  // Use a window-level guard rather than module-level: when Sine reloads
+  // this .uc.mjs the module's `_filePickerSuppressorInstalled` resets to
+  // false but the previously-registered wrapper factory is still live in
+  // the component registrar (and its closure pins the truly-original
+  // factory). Re-running install would chain a new wrapper on top of the
+  // old wrapper, so subsequent createInstance calls walk N hops per N
+  // reloads. Checking a flag on `window` survives module GC.
+  if (window._easyFilesFilePickerSuppressorInstalled) {
+    console.log(
+      "[EasyFiles] FilePicker suppressor already installed (window flag)"
+    );
+    _filePickerSuppressorInstalled = true;
+    return;
+  }
+  if (_filePickerSuppressorInstalled) {
+    console.log(
+      "[EasyFiles] FilePicker suppressor already installed, skipping"
+    );
+    return;
+  }
+
+  let registrar;
+  try {
+    registrar = Components.manager.QueryInterface(Ci.nsIComponentRegistrar);
+    _filePickerCID = registrar.contractIDToCID(FILE_PICKER_CONTRACT_ID);
+    _filePickerOriginalFactory = Components.manager.getClassObjectByContractID(
+      FILE_PICKER_CONTRACT_ID,
+      Ci.nsIFactory
+    );
+  } catch (e) {
+    console.error(
+      "[EasyFiles] could not look up filepicker factory; suppressor not installed",
+      e
+    );
+    return;
+  }
+
+  const wrapperFactory = {
+    QueryInterface: ChromeUtils.generateQI(["nsIFactory"]),
+    // Both legacy (outer, iid) and modern (iid) signatures may be used by
+    // older or new callers. Detect by argument count.
+    createInstance(arg1, arg2) {
+      const usingLegacySig = arg2 !== undefined;
+      const iid = usingLegacySig ? arg2 : arg1;
+
+      let shouldSuppress = false;
+      let untilDelta = "n/a";
+      try {
+        const ctrl = window._easyFilesController;
+        if (ctrl?._suppressNativePicker) {
+          const until = ctrl._suppressNativePickerUntil || 0;
+          untilDelta = until - Date.now();
+          if (untilDelta > 0) shouldSuppress = true;
+        }
+      } catch {}
+
+      if (shouldSuppress) {
+        console.log(
+          "[EasyFiles] FilePicker.createInstance SUPPRESSED",
+          "windowMs=" + untilDelta
+        );
+        return makeNoOpFilePicker();
+      }
+
+      try {
+        if (usingLegacySig) {
+          return _filePickerOriginalFactory.createInstance(arg1, arg2);
+        }
+        return _filePickerOriginalFactory.createInstance(arg1);
+      } catch (e) {
+        console.error(
+          "[EasyFiles] FilePicker original factory threw, re-throwing",
+          e
+        );
+        throw e;
+      }
+    },
+  };
+
+  try {
+    registrar.unregisterFactory(
+      _filePickerCID,
+      _filePickerOriginalFactory
+    );
+    registrar.registerFactory(
+      _filePickerCID,
+      "EasyFiles FilePicker Wrapper",
+      FILE_PICKER_CONTRACT_ID,
+      wrapperFactory
+    );
+    _filePickerSuppressorInstalled = true;
+    window._easyFilesFilePickerSuppressorInstalled = true;
+    console.log(
+      "[EasyFiles] FilePicker suppressor installed (CID=",
+      _filePickerCID?.toString(),
+      ")"
+    );
+  } catch (e) {
+    console.error(
+      "[EasyFiles] could not install FilePicker wrapper factory",
+      e
+    );
+  }
+}
+
+// A minimal nsIFilePicker that signals "user cancelled" without opening any
+// UI. Returned in place of the real picker while our panel is active.
+function makeNoOpFilePicker() {
+  return {
+    QueryInterface: ChromeUtils.generateQI(["nsIFilePicker"]),
+    init() {},
+    appendFilters() {},
+    appendFilter() {},
+    appendRawFilter() {},
+    defaultString: "",
+    defaultExtension: "",
+    filterIndex: 0,
+    displayDirectory: null,
+    displaySpecialDirectory: "",
+    file: null,
+    fileURL: null,
+    files: null,
+    domFileOrDirectory: null,
+    domFileOrDirectoryEnumerator: null,
+    addToRecentDocs: false,
+    mode: 0,
+    okButtonLabel: "",
+    okButtonAccessKey: "",
+    open(callback) {
+      if (!callback) return;
+      try {
+        Services.tm.dispatchToMainThread(() => {
+          try {
+            callback.done(Ci.nsIFilePicker.returnCancel);
+          } catch {}
+        });
+      } catch {}
+    },
+    show() {
+      return Ci.nsIFilePicker.returnCancel;
+    },
+  };
+}
+
 function setupDefaults() {
   const branch = Services.prefs.getDefaultBranch("");
   const safeSet = (name, fn) => {
@@ -340,6 +496,11 @@ class EasyFilesController {
     // panel flips this for the current panel session. Reset to false on each
     // open so the next picker invocation starts back in filtered mode.
     this.showAllRecent = false;
+    // Read by the chrome-level nsIFilePicker factory wrapper to decide
+    // whether to suppress native picker creation. Both must be truthy and
+    // _suppressNativePickerUntil must still be in the future.
+    this._suppressNativePicker = false;
+    this._suppressNativePickerUntil = 0;
   }
 
   init() {
@@ -460,6 +621,14 @@ class EasyFilesController {
     this.selectedFiles = [];
     this._submitted = false;
     this.showAllRecent = false;
+    // Arm the chrome-level nsIFilePicker suppressor. While these are set,
+    // any attempt to open a native file picker (Zen's chrome handler, the
+    // OS file dialog, etc.) gets a no-op picker that signals user-cancel.
+    // _suppressNativePickerUntil acts as a safety deadline in case
+    // _onHidden never fires (controller destroyed mid-flight). 5 seconds
+    // is comfortably longer than any real picker open latency.
+    this._suppressNativePicker = true;
+    this._suppressNativePickerUntil = Date.now() + 5000;
 
     this._switchTab("recent");
     this._updateInfo();
@@ -1369,6 +1538,8 @@ class EasyFilesController {
     this.selectedFiles = [];
     this._submitted = false;
     this.showAllRecent = false;
+    this._suppressNativePicker = false;
+    this._suppressNativePickerUntil = 0;
   }
 }
 
@@ -1481,6 +1652,8 @@ function init() {
     injectStyle();
     registerActor();
     console.log("[EasyFiles] actor registered");
+
+    installFilePickerSuppressor();
 
     const ctrl = new EasyFilesController();
     ctrl.init();
