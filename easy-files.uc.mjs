@@ -82,23 +82,45 @@ function installFilePickerSuppressor() {
     // older or new callers. Detect by argument count.
     createInstance(arg1, arg2) {
       const usingLegacySig = arg2 !== undefined;
-      const iid = usingLegacySig ? arg2 : arg1;
 
       let shouldSuppress = false;
       let untilDelta = "n/a";
+      let ctrlState = "no-ctrl";
       try {
         const ctrl = window._easyFilesController;
-        if (ctrl?._suppressNativePicker) {
-          const until = ctrl._suppressNativePickerUntil || 0;
-          untilDelta = until - Date.now();
-          if (untilDelta > 0) shouldSuppress = true;
+        if (ctrl) {
+          ctrlState =
+            "suppress=" +
+            !!ctrl._suppressNativePicker +
+            ",until=" +
+            (ctrl._suppressNativePickerUntil || 0);
+          if (ctrl._suppressNativePicker) {
+            const until = ctrl._suppressNativePickerUntil || 0;
+            untilDelta = until - Date.now();
+            if (untilDelta > 0) shouldSuppress = true;
+          }
         }
-      } catch {}
+      } catch (e) {
+        ctrlState = "error:" + e.message;
+      }
+
+      // Log EVERY createInstance call so we can confirm the wrapper is in
+      // the call path. If a native picker opens but no log appears, the
+      // call is going through a different contract ID and we need to
+      // expand the wrapper. If the log shows shouldSuppress=false when it
+      // should be true, the timing/race is the problem and we need to
+      // arm the flag earlier.
+      console.log(
+        "[EasyFiles] FilePicker.createInstance",
+        "shouldSuppress=" + shouldSuppress,
+        "windowMs=" + untilDelta,
+        "ctrl=" + ctrlState,
+        "legacySig=" + usingLegacySig
+      );
 
       if (shouldSuppress) {
         console.log(
-          "[EasyFiles] FilePicker.createInstance SUPPRESSED",
-          "windowMs=" + untilDelta
+          "[EasyFiles] FilePicker.createInstance SUPPRESSED returning no-op"
         );
         return makeNoOpFilePicker();
       }
@@ -1650,10 +1672,17 @@ function init() {
     }
 
     injectStyle();
+
+    // Install the nsIFilePicker suppressor BEFORE registering the actor.
+    // If anything in registerActor() throws, the suppressor is still
+    // active so we at least block the native dialog when our content
+    // intercepts catch a click. (And install is idempotent across
+    // reloads via the window-level guard, so calling it first does no
+    // harm if init runs multiple times.)
+    installFilePickerSuppressor();
+
     registerActor();
     console.log("[EasyFiles] actor registered");
-
-    installFilePickerSuppressor();
 
     const ctrl = new EasyFilesController();
     ctrl.init();

@@ -21,6 +21,34 @@ export class EasyFilesParent extends JSWindowActorParent {
 
     switch (message.name) {
       case "EasyFiles:Show": {
+        // Arm the chrome-side nsIFilePicker suppressor AS EARLY AS
+        // POSSIBLE — right when the IPC from content lands in the parent
+        // process. Zen's chrome-level file-input handler races us to call
+        // nsIFilePicker.createInstance via its own IPC path; if our flag
+        // isn't set by then the wrapper falls through to the original
+        // factory and the native dialog opens alongside our panel. Doing
+        // it here (before the CustomEvent dispatch + listener + handler
+        // chain) shaves the race window down to chrome process scheduling.
+        try {
+          const ctrl = win._easyFilesController;
+          if (ctrl) {
+            ctrl._suppressNativePicker = true;
+            ctrl._suppressNativePickerUntil = Date.now() + 5000;
+            console.log(
+              "[EasyFilesParent] armed nsIFilePicker suppressor (until +5s)"
+            );
+          } else {
+            console.warn(
+              "[EasyFilesParent] no _easyFilesController on chrome window; cannot arm suppressor"
+            );
+          }
+        } catch (e) {
+          console.warn(
+            "[EasyFilesParent] could not arm suppressor (continuing)",
+            e
+          );
+        }
+
         let browser = null;
         try {
           browser = this.browsingContext.top.embedderElement;

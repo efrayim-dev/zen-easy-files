@@ -3,7 +3,7 @@
   "name": "Easy Files",
   "description": "Opera-like file picker with recent downloads, clipboard, and screenshots.",
   "author": "efray",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "homepage": "https://github.com/efrayim-dev/zen-easy-files",
   "style": {
     "chrome": "userChrome.css"
@@ -18,6 +18,6 @@
   "preferences": "preferences.json",
   "tags": ["chrome", "productivity", "uploads"],
   "createdAt": "2026-05-08",
-  "updatedAt": "2026-05-13T16:09:53Z",
+  "updatedAt": "2026-05-13T19:06:49Z",
   "fork": ["zen"]
 }
