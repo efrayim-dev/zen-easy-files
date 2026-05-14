@@ -17,6 +17,9 @@ import { FileUtils } from "resource://gre/modules/FileUtils.sys.mjs";
 const SCRIPT_DIR = new URL(".", import.meta.url).href;
 const PANEL_ID = "easy-files-panel";
 const STYLE_ID = "easy-files-style";
+// Bumped on every release; logged at init() so users can confirm from the
+// Browser Console that the version Sine pulled is actually the one running.
+const MOD_VERSION = "1.6.2";
 
 const PREF_ENABLED = "extensions.easy-files.enabled";
 const PREF_LIMIT = "extensions.easy-files.recent-limit";
@@ -34,52 +37,48 @@ let _registered = false;
 // path can't open on top of us. Outside that window the wrapper delegates to
 // the original factory verbatim so Save As, attach in mail, etc. all work.
 let _filePickerSuppressorInstalled = false;
-let _filePickerOriginalFactory = null;
-let _filePickerCID = null;
-const FILE_PICKER_CONTRACT_ID = "@mozilla.org/filepicker;1";
 
-function installFilePickerSuppressor() {
-  // Use a window-level guard rather than module-level: when Sine reloads
-  // this .uc.mjs the module's `_filePickerSuppressorInstalled` resets to
-  // false but the previously-registered wrapper factory is still live in
-  // the component registrar (and its closure pins the truly-original
-  // factory). Re-running install would chain a new wrapper on top of the
-  // old wrapper, so subsequent createInstance calls walk N hops per N
-  // reloads. Checking a flag on `window` survives module GC.
-  if (window._easyFilesFilePickerSuppressorInstalled) {
-    console.log(
-      "[EasyFiles] FilePicker suppressor already installed (window flag)"
-    );
-    _filePickerSuppressorInstalled = true;
-    return;
-  }
-  if (_filePickerSuppressorInstalled) {
-    console.log(
-      "[EasyFiles] FilePicker suppressor already installed, skipping"
-    );
-    return;
-  }
-
-  let registrar;
+// Discover EVERY registered XPCOM contract that looks file-picker-related and
+// wrap them all. Zen Browser may register its own clipboard-image-aware
+// filepicker under a custom contract ID alongside the standard one, in which
+// case wrapping just "@mozilla.org/filepicker;1" misses Zen's path. This is
+// also paranoid future-proofing: any forked or alternate filepicker we
+// haven't seen will get caught too.
+function discoverFilePickerContracts() {
+  const matches = [];
   try {
-    registrar = Components.manager.QueryInterface(Ci.nsIComponentRegistrar);
-    _filePickerCID = registrar.contractIDToCID(FILE_PICKER_CONTRACT_ID);
-    _filePickerOriginalFactory = Components.manager.getClassObjectByContractID(
-      FILE_PICKER_CONTRACT_ID,
-      Ci.nsIFactory
+    const registrar = Components.manager.QueryInterface(
+      Ci.nsIComponentRegistrar
     );
+    const contracts = registrar.enumerateContractIDs();
+    while (contracts.hasMoreElements()) {
+      let cid;
+      try {
+        cid = contracts
+          .getNext()
+          .QueryInterface(Ci.nsISupportsCString).data;
+      } catch {
+        continue;
+      }
+      if (/file[-_]?picker/i.test(cid)) {
+        matches.push(cid);
+      }
+    }
   } catch (e) {
     console.error(
-      "[EasyFiles] could not look up filepicker factory; suppressor not installed",
+      "[EasyFiles] could not enumerate XPCOM contracts; falling back to canonical filepicker only",
       e
     );
-    return;
   }
+  if (matches.length === 0) {
+    matches.push("@mozilla.org/filepicker;1");
+  }
+  return matches;
+}
 
-  const wrapperFactory = {
+function buildSuppressorWrapper(originalFactory, contractIdLabel) {
+  return {
     QueryInterface: ChromeUtils.generateQI(["nsIFactory"]),
-    // Both legacy (outer, iid) and modern (iid) signatures may be used by
-    // older or new callers. Detect by argument count.
     createInstance(arg1, arg2) {
       const usingLegacySig = arg2 !== undefined;
 
@@ -104,14 +103,9 @@ function installFilePickerSuppressor() {
         ctrlState = "error:" + e.message;
       }
 
-      // Log EVERY createInstance call so we can confirm the wrapper is in
-      // the call path. If a native picker opens but no log appears, the
-      // call is going through a different contract ID and we need to
-      // expand the wrapper. If the log shows shouldSuppress=false when it
-      // should be true, the timing/race is the problem and we need to
-      // arm the flag earlier.
       console.log(
         "[EasyFiles] FilePicker.createInstance",
+        "contract=" + contractIdLabel,
         "shouldSuppress=" + shouldSuppress,
         "windowMs=" + untilDelta,
         "ctrl=" + ctrlState,
@@ -120,48 +114,114 @@ function installFilePickerSuppressor() {
 
       if (shouldSuppress) {
         console.log(
-          "[EasyFiles] FilePicker.createInstance SUPPRESSED returning no-op"
+          "[EasyFiles] FilePicker.createInstance SUPPRESSED",
+          "contract=" + contractIdLabel
         );
         return makeNoOpFilePicker();
       }
 
       try {
         if (usingLegacySig) {
-          return _filePickerOriginalFactory.createInstance(arg1, arg2);
+          return originalFactory.createInstance(arg1, arg2);
         }
-        return _filePickerOriginalFactory.createInstance(arg1);
+        return originalFactory.createInstance(arg1);
       } catch (e) {
         console.error(
           "[EasyFiles] FilePicker original factory threw, re-throwing",
+          contractIdLabel,
           e
         );
         throw e;
       }
     },
   };
+}
 
-  try {
-    registrar.unregisterFactory(
-      _filePickerCID,
-      _filePickerOriginalFactory
-    );
-    registrar.registerFactory(
-      _filePickerCID,
-      "EasyFiles FilePicker Wrapper",
-      FILE_PICKER_CONTRACT_ID,
-      wrapperFactory
+function installFilePickerSuppressor() {
+  // Window-level guard so Sine script reloads don't chain wrappers on top
+  // of wrappers (each iteration would close over the previous wrapper as
+  // its delegate). The original wrapper stays live in the component
+  // registrar and reads the latest controller via window._easyFilesController.
+  if (window._easyFilesFilePickerSuppressorInstalled) {
+    console.log(
+      "[EasyFiles] FilePicker suppressor already installed (window flag); skipping"
     );
     _filePickerSuppressorInstalled = true;
-    window._easyFilesFilePickerSuppressorInstalled = true;
+    return;
+  }
+  if (_filePickerSuppressorInstalled) {
     console.log(
-      "[EasyFiles] FilePicker suppressor installed (CID=",
-      _filePickerCID?.toString(),
-      ")"
+      "[EasyFiles] FilePicker suppressor already installed (module flag); skipping"
     );
+    return;
+  }
+
+  const contracts = discoverFilePickerContracts();
+  console.log(
+    "[EasyFiles] discovered filepicker XPCOM contracts:",
+    JSON.stringify(contracts)
+  );
+
+  let registrar;
+  try {
+    registrar = Components.manager.QueryInterface(Ci.nsIComponentRegistrar);
   } catch (e) {
     console.error(
-      "[EasyFiles] could not install FilePicker wrapper factory",
+      "[EasyFiles] could not get nsIComponentRegistrar; suppressor not installed",
       e
+    );
+    return;
+  }
+
+  const wrapped = [];
+  for (const contractId of contracts) {
+    let cid;
+    let originalFactory;
+    try {
+      cid = registrar.contractIDToCID(contractId);
+      originalFactory = Components.manager.getClassObjectByContractID(
+        contractId,
+        Ci.nsIFactory
+      );
+    } catch (e) {
+      console.warn(
+        "[EasyFiles] could not look up factory for",
+        contractId,
+        "— skipping",
+        e
+      );
+      continue;
+    }
+
+    const wrapperFactory = buildSuppressorWrapper(originalFactory, contractId);
+    try {
+      registrar.unregisterFactory(cid, originalFactory);
+      registrar.registerFactory(
+        cid,
+        "EasyFiles FilePicker Wrapper (" + contractId + ")",
+        contractId,
+        wrapperFactory
+      );
+      wrapped.push(contractId);
+    } catch (e) {
+      console.error(
+        "[EasyFiles] could not install wrapper for",
+        contractId,
+        e
+      );
+    }
+  }
+
+  _filePickerSuppressorInstalled = wrapped.length > 0;
+  if (_filePickerSuppressorInstalled) {
+    window._easyFilesFilePickerSuppressorInstalled = true;
+    console.log(
+      "[EasyFiles] FilePicker suppressor installed for contracts:",
+      JSON.stringify(wrapped)
+    );
+  } else {
+    console.error(
+      "[EasyFiles] FilePicker suppressor NOT installed — no contracts wrapped"
     );
   }
 }
@@ -1654,7 +1714,10 @@ function collapsePath(p) {
 }
 
 function init() {
-  console.log("[EasyFiles] init() starting; SCRIPT_DIR =", SCRIPT_DIR);
+  console.log(
+    "[EasyFiles] mod version " + MOD_VERSION + " init starting; SCRIPT_DIR =",
+    SCRIPT_DIR
+  );
   try {
     if (window._easyFilesController) {
       try {
