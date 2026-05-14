@@ -2,6 +2,12 @@
 // Receives messages from the content actor and dispatches a CustomEvent
 // to the chrome window so the panel controller can handle them.
 
+// Bumped on every release so easy-files.uc.mjs can detect when Zen has a
+// stale ESM cached version of this file (JSWindowActor module imports do
+// NOT get re-fetched when Sine refreshes; they only refresh on a full Zen
+// process restart). Mismatch -> loud warning at startup.
+export const ACTOR_PARENT_VERSION = "1.6.3";
+
 export class EasyFilesParent extends JSWindowActorParent {
   receiveMessage(message) {
     console.log(

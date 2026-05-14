@@ -19,7 +19,13 @@ const PANEL_ID = "easy-files-panel";
 const STYLE_ID = "easy-files-style";
 // Bumped on every release; logged at init() so users can confirm from the
 // Browser Console that the version Sine pulled is actually the one running.
-const MOD_VERSION = "1.6.2";
+const MOD_VERSION = "1.6.3";
+
+// Minimum compatible EasyFilesParent.sys.mjs ACTOR_PARENT_VERSION. If the
+// loaded parent module is older, JSWindowActor ESM caching is serving a
+// stale module from a previous Zen session and a full process restart is
+// required. Logged loudly so users don't waste time chasing phantom bugs.
+const EXPECTED_ACTOR_PARENT_VERSION = "1.6.3";
 
 const PREF_ENABLED = "extensions.easy-files.enabled";
 const PREF_LIMIT = "extensions.easy-files.recent-limit";
@@ -1746,6 +1752,46 @@ function init() {
 
     registerActor();
     console.log("[EasyFiles] actor registered");
+
+    // Detect stale JSWindowActor ESM cache: import the parent module from
+    // chrome and read its exported ACTOR_PARENT_VERSION. ESM uses a global
+    // module cache keyed on canonical URL, so the version we read here is
+    // exactly the one the actor will use. If it's older than this script
+    // expects, Sine refreshed easy-files.uc.mjs but the actor module
+    // didn't reload — the only fix is a full Zen process restart.
+    try {
+      const { ACTOR_PARENT_VERSION } = ChromeUtils.importESModule(
+        SCRIPT_DIR + "EasyFilesParent.sys.mjs"
+      );
+      if (ACTOR_PARENT_VERSION === EXPECTED_ACTOR_PARENT_VERSION) {
+        console.log(
+          "[EasyFiles] actor parent module version OK:",
+          ACTOR_PARENT_VERSION
+        );
+      } else {
+        console.warn(
+          "%c[EasyFiles] STALE ACTOR PARENT MODULE — fully restart Zen!",
+          "color:#fff;background:#c00;font-weight:bold;padding:2px 6px;"
+        );
+        console.warn(
+          "[EasyFiles] expected ACTOR_PARENT_VERSION =",
+          EXPECTED_ACTOR_PARENT_VERSION,
+          "loaded =",
+          ACTOR_PARENT_VERSION || "(undefined — pre-1.6.3)"
+        );
+        console.warn(
+          "[EasyFiles] Sine refresh re-runs easy-files.uc.mjs but does NOT" +
+            " re-import EasyFilesParent.sys.mjs from disk. Quit all Zen" +
+            " windows (taskbar tray icon too) and reopen to load the new" +
+            " actor module."
+        );
+      }
+    } catch (e) {
+      console.warn(
+        "[EasyFiles] could not probe actor parent module version (continuing)",
+        e
+      );
+    }
 
     const ctrl = new EasyFilesController();
     ctrl.init();
