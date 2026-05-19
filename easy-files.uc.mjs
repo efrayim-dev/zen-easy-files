@@ -19,13 +19,13 @@ const PANEL_ID = "easy-files-panel";
 const STYLE_ID = "easy-files-style";
 // Bumped on every release; logged at init() so users can confirm from the
 // Browser Console that the version Sine pulled is actually the one running.
-const MOD_VERSION = "1.6.3";
+const MOD_VERSION = "1.6.4";
 
 // Minimum compatible EasyFilesParent.sys.mjs ACTOR_PARENT_VERSION. If the
 // loaded parent module is older, JSWindowActor ESM caching is serving a
 // stale module from a previous Zen session and a full process restart is
 // required. Logged loudly so users don't waste time chasing phantom bugs.
-const EXPECTED_ACTOR_PARENT_VERSION = "1.6.3";
+const EXPECTED_ACTOR_PARENT_VERSION = "1.6.4";
 
 const PREF_ENABLED = "extensions.easy-files.enabled";
 const PREF_LIMIT = "extensions.easy-files.recent-limit";
@@ -51,7 +51,12 @@ let _filePickerSuppressorInstalled = false;
 // also paranoid future-proofing: any forked or alternate filepicker we
 // haven't seen will get caught too.
 function discoverFilePickerContracts() {
+  // Tighten the picker matches but ALSO log the broader "interesting"
+  // contracts so we can see what Zen registers in the surrounding
+  // namespace. Helpful when the native dialog opens via an alternate
+  // contract whose name doesn't contain "filepicker".
   const matches = [];
+  const wider = [];
   try {
     const registrar = Components.manager.QueryInterface(
       Ci.nsIComponentRegistrar
@@ -68,6 +73,10 @@ function discoverFilePickerContracts() {
       }
       if (/file[-_]?picker/i.test(cid)) {
         matches.push(cid);
+      } else if (/(picker|chooser|filedialog|file-dialog|fileselect)/i.test(cid)) {
+        // Not auto-wrapped (could be color picker, datetime picker, etc.)
+        // but interesting enough to log so we can spot Zen-specific naming.
+        wider.push(cid);
       }
     }
   } catch (e) {
@@ -78,6 +87,12 @@ function discoverFilePickerContracts() {
   }
   if (matches.length === 0) {
     matches.push("@mozilla.org/filepicker;1");
+  }
+  if (wider.length) {
+    console.log(
+      "[EasyFiles] adjacent picker/chooser/dialog contracts (NOT wrapped):",
+      JSON.stringify(wider)
+    );
   }
   return matches;
 }
@@ -717,6 +732,24 @@ class EasyFilesController {
     // is comfortably longer than any real picker open latency.
     this._suppressNativePicker = true;
     this._suppressNativePickerUntil = Date.now() + 5000;
+
+    // Self-test the suppressor. Instantiate nsIFilePicker via the canonical
+    // contract and watch whether our wrapper logs FilePicker.createInstance
+    // SUPPRESSED. If it does, our wrap is in the chain (the native dialog
+    // is reaching the picker via a different contract or bypassing XPCOM
+    // entirely). If we DON'T see the createInstance log right after this
+    // line, the wrap is broken or never installed.
+    try {
+      const probe = Cc["@mozilla.org/filepicker;1"].createInstance(
+        Ci.nsIFilePicker
+      );
+      console.log(
+        "[EasyFiles] suppressor self-test instance produced:",
+        probe?.toString?.() || String(probe)
+      );
+    } catch (e) {
+      console.warn("[EasyFiles] suppressor self-test threw:", e);
+    }
 
     this._switchTab("recent");
     this._updateInfo();

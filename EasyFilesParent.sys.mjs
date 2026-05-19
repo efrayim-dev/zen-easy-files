@@ -6,7 +6,7 @@
 // stale ESM cached version of this file (JSWindowActor module imports do
 // NOT get re-fetched when Sine refreshes; they only refresh on a full Zen
 // process restart). Mismatch -> loud warning at startup.
-export const ACTOR_PARENT_VERSION = "1.6.3";
+export const ACTOR_PARENT_VERSION = "1.6.4";
 
 export class EasyFilesParent extends JSWindowActorParent {
   receiveMessage(message) {
